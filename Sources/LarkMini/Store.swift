@@ -183,7 +183,8 @@ final class Store: ObservableObject {
     private func tick() async {
         guard !isDemo else { return }
         tickCount += 1
-        if controlSeat != nil, tickCount % 3 == 1 { await refreshControl() }
+        // A slow Control read must never hold up Lark polling.
+        if controlSeat != nil, tickCount % 3 == 1, !controlBusy { Task { await refreshControl() } }
         guard auth == .signedIn else { return }
         if tickCount % 6 == 1 {
             await loadChats(reset: true, quiet: true)
