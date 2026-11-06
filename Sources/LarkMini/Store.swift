@@ -32,7 +32,10 @@ final class Store: ObservableObject {
     @Published var sending = false
     @Published var loadingOlder = false
     @Published var settings = Settings()
-    @Published var drafts: [String: String] = [:]
+    /// Unsent text survives quitting: device-local, like other preferences.
+    @Published var drafts = UserDefaults.standard.dictionary(forKey: "drafts") as? [String: String] ?? [:] {
+        didSet { if !isDemo { UserDefaults.standard.set(drafts.filter { !$0.value.isEmpty }, forKey: "drafts") } }
+    }
     @Published var search = ""
     @Published var remoteResults: [Chat] = []
     @Published var toasts: [ChatToast] = []
@@ -52,7 +55,9 @@ final class Store: ObservableObject {
     @Published var controlOpen = false
     @Published var controlBusy = false
     @Published var controlSending = false
-    @Published var controlDraft = ""
+    @Published var controlDraft = UserDefaults.standard.string(forKey: "controlDraft") ?? "" {
+        didSet { if !isDemo { UserDefaults.standard.set(controlDraft, forKey: "controlDraft") } }
+    }
     @Published var controlActivity: String?
     @Published private(set) var controlHasOlder = false
     @Published private(set) var controlNeedsInput = false
@@ -757,23 +762,33 @@ final class Store: ObservableObject {
         sending = false
     }
 
+    /// Dropped or picked files upload one at a time, in order; none is dropped silently.
     func sendAttachment(_ url: URL, to chatId: String) async {
-        guard !sending else { return }
-        sending = true
-        defer { sending = false }
-        do {
-            let type = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType
-            let message: ChatMessage?
-            if type?.conforms(to: .image) == true {
-                message = try await api.sendImage(chatId: chatId, fileURL: url)
-            } else {
-                message = try await api.sendFile(chatId: chatId, fileURL: url)
+        attachmentQueue.append((url, chatId))
+        guard !drainingAttachments else { return }
+        drainingAttachments = true
+        defer { drainingAttachments = false }
+        var failed: [String] = []
+        while !attachmentQueue.isEmpty {
+            let (file, target) = attachmentQueue.removeFirst()
+            while sending { try? await Task.sleep(nanoseconds: 100_000_000) }  // a text send is in flight
+            sending = true
+            do {
+                let type = try? file.resourceValues(forKeys: [.contentTypeKey]).contentType
+                let message = type?.conforms(to: .image) == true
+                    ? try await api.sendImage(chatId: target, fileURL: file)
+                    : try await api.sendFile(chatId: target, fileURL: file)
+                if let message { append(message, chatId: target) }
+            } catch {
+                failed.append("\(file.lastPathComponent): \(error.localizedDescription)")
             }
-            if let message { append(message, chatId: chatId) }
-        } catch {
-            errorText = error.localizedDescription
+            sending = false
         }
+        if !failed.isEmpty { errorText = "Not sent — " + failed.joined(separator: "; ") }
     }
+
+    private var attachmentQueue: [(URL, String)] = []
+    private var drainingAttachments = false
 
     private func append(_ message: ChatMessage, chatId: String) {
         var current = messages[chatId] ?? []
@@ -1018,6 +1033,8 @@ final class Store: ObservableObject {
     static func demo(needsYou: Bool = false) -> Store {
         let store = Store()
         store.isDemo = true
+        store.drafts = [:]
+        store.controlDraft = ""
         store.settings = Settings()
         store.muted = [:]
         store.auth = .signedIn

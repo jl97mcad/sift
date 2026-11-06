@@ -298,18 +298,18 @@ enum CLI {
             return ok(["ok": true, "sent": true])
         case "digest":
             guard let seat = state.current.control else { return fail("No Control seat configured") }
-            let reading = try? await AgentProviders.resolve(seat.provider).readFollowing(seat, tail: 80, state: state).1
-            let last = reading?.messages.last { $0.isAssistant }
+            let reading = try await AgentProviders.resolve(seat.provider).readFollowing(seat, tail: 80, state: state).1
+            let last = reading.messages.last { $0.isAssistant }
             return ok(["ok": true,
-                       "activity": reading?.activity ?? "",
+                       "activity": reading.activity ?? "",
                        "last": last.map { UpdateText.short($0.text) } ?? ""])
         case "logs":
             guard let seat = state.current.control else { return fail("No Control seat configured") }
             let flags = Flags(args)
             let tail = Int(flags.value("--tail") ?? "12") ?? 12
             // Tool calls fill most timeline entries; read a wider bounded window for `tail` messages.
-            let messages = (try? await AgentProviders.resolve(seat.provider)
-                .readFollowing(seat, tail: min(200, max(80, tail * 10)), state: state).1)?.messages ?? []
+            let messages = try await AgentProviders.resolve(seat.provider)
+                .readFollowing(seat, tail: min(200, max(80, tail * 10)), state: state).1.messages
             let rows = messages.suffix(tail).map { ["role": $0.role, "text": $0.text] }
             return ok(["ok": true, "messages": rows])
         case "asks":

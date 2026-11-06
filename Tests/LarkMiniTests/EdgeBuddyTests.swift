@@ -34,3 +34,25 @@ final class EdgeBuddyTests: XCTestCase {
         XCTAssertEqual(GazeTracker.look(dx: 400, dy: 0).offset.width, 2.8, accuracy: 0.001)
     }
 }
+
+final class AttachmentQueueTests: XCTestCase {
+    @MainActor
+    func testConcurrentDropsAreAllAttemptedAndFailuresNamed() async throws {
+        guard ProcessInfo.processInfo.environment["CFFIXED_USER_HOME"]?.contains("/dist/test-home") == true else {
+            throw XCTSkip("Use CFFIXED_USER_HOME=$PWD/dist/test-home swift test to isolate local state")
+        }
+        let store = Store()   // the isolated test home has no sign-in, so every upload fails
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let first = folder.appendingPathComponent("first.txt"), second = folder.appendingPathComponent("second.txt")
+        try Data("a".utf8).write(to: first)
+        try Data("b".utf8).write(to: second)
+        async let one: Void = store.sendAttachment(first, to: "chat")
+        async let two: Void = store.sendAttachment(second, to: "chat")
+        _ = await (one, two)
+        let error = try XCTUnwrap(store.errorText)
+        XCTAssertTrue(error.contains("first.txt") && error.contains("second.txt"), error)
+        XCTAssertFalse(store.sending)
+    }
+}
