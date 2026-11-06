@@ -367,9 +367,9 @@ enum CLI {
                   let base = CompanionConfig.validatedURL(raw) else {
                 return fail("No Companion URL configured. Run sift companion set --url http://host:port")
             }
-            let path = Flags(args).value("--path")
-            guard CompanionConfig.targetURL(base: base, path: path) != nil else {
-                return fail("--path must stay on the configured Companion origin")
+            let path = CompanionPath.accepted(Flags(args).value("--path"))
+            guard let target = CompanionConfig.targetURL(base: base, path: path) else {
+                return fail("Could not build the Companion URL")
             }
             guard let openURL = companionOpenURL(path: path) else {
                 return fail("Could not build the Companion window URL")
@@ -378,11 +378,7 @@ enum CLI {
             guard NSWorkspace.shared.open(openURL) else {
                 return fail("Could not open the Companion window")
             }
-            return ok([
-                "ok": true,
-                "url": CompanionConfig.targetURL(base: base, path: path)?.absoluteString ?? base.absoluteString,
-                "path": path ?? ""
-            ])
+            return ok(["ok": true, "url": target.absoluteString, "path": path])
         default:
             return fail("Unknown companion command '\(sub)'")
         }
@@ -403,14 +399,12 @@ enum CLI {
         return ok(payload)
     }
 
-    private static func companionOpenURL(path: String?) -> URL? {
+    private static func companionOpenURL(path: String) -> URL? {
         var components = URLComponents()
         components.scheme = "sift"
         components.host = "companion"
         components.path = "/open"
-        if let path, !path.isEmpty {
-            components.queryItems = [URLQueryItem(name: "path", value: path)]
-        }
+        components.queryItems = [URLQueryItem(name: "path", value: path)]
         return components.url
     }
 

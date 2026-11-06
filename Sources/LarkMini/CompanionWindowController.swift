@@ -7,6 +7,7 @@ final class CompanionWindowController: NSWindowController, WKNavigationDelegate,
 
     private let webView: WKWebView
     private var policy: CompanionNavigationPolicy?
+    private var baseURL: URL?
 
     private init() {
         let configuration = WKWebViewConfiguration()
@@ -41,6 +42,7 @@ final class CompanionWindowController: NSWindowController, WKNavigationDelegate,
 
     func open(baseURL: URL, path: String?) {
         let target = CompanionConfig.targetURL(base: baseURL, path: path) ?? baseURL
+        self.baseURL = baseURL
         policy = CompanionNavigationPolicy(baseURL: baseURL)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
@@ -112,6 +114,13 @@ final class CompanionWindowController: NSWindowController, WKNavigationDelegate,
                  initiatedByFrame frame: WKFrameInfo,
                  type: WKMediaCaptureType,
                  decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+        guard frame.isMainFrame,
+              let baseURL,
+              CompanionConfig.originMatches(scheme: origin.`protocol`, host: origin.host,
+                                            port: origin.port, base: baseURL) else {
+            decisionHandler(.prompt)
+            return
+        }
         switch type {
         case .camera, .microphone, .cameraAndMicrophone:
             decisionHandler(.grant)

@@ -21,8 +21,37 @@ final class CompanionTests: XCTestCase {
                        "http://100.113.131.96:8090/companion/app/abc/messages/management")
         XCTAssertEqual(CompanionConfig.targetURL(base: base, path: "companion/app/abc")?.absoluteString,
                        "http://100.113.131.96:8090/companion/app/abc")
-        XCTAssertEqual(CompanionConfig.targetURL(base: base, path: nil), base)
-        XCTAssertNil(CompanionConfig.targetURL(base: base, path: "//example.com/elsewhere"))
+        XCTAssertEqual(CompanionConfig.targetURL(base: base, path: nil)?.absoluteString,
+                       "http://100.113.131.96:8090/companion/app")
+        XCTAssertEqual(CompanionConfig.targetURL(base: base, path: "//example.com/elsewhere")?.absoluteString,
+                       "http://100.113.131.96:8090/companion/app")
+    }
+
+    func testCompanionPathOnlyAcceptsPathsUnderCompanion() {
+        XCTAssertEqual(CompanionPath.accepted(nil), "/companion/app")
+        XCTAssertEqual(CompanionPath.accepted("/companion/app/6bd/messages/management"),
+                       "/companion/app/6bd/messages/management")
+        XCTAssertEqual(CompanionPath.accepted("companion/app/6bd"), "/companion/app/6bd")
+        XCTAssertEqual(CompanionPath.accepted("/other"), "/companion/app")
+        XCTAssertEqual(CompanionPath.accepted("/companion/../secret"), "/companion/app")
+        XCTAssertEqual(CompanionPath.accepted("/companion/app/%2e%2e/secret"), "/companion/app")
+        XCTAssertEqual(CompanionPath.accepted("/companion/app?tab=plans"), "/companion/app?tab=plans")
+    }
+
+    func testMediaCaptureMatchesOnlyTheConfiguredOrigin() {
+        let base = URL(string: "http://100.113.131.96:8090")!
+        XCTAssertTrue(CompanionConfig.originMatches(
+            scheme: "http", host: "100.113.131.96", port: 8090, base: base))
+        XCTAssertFalse(CompanionConfig.originMatches(
+            scheme: "http", host: "example.com", port: 8090, base: base))
+        XCTAssertFalse(CompanionConfig.originMatches(
+            scheme: "https", host: "id.outlandish.com", port: 443, base: base))
+        XCTAssertFalse(CompanionConfig.originMatches(
+            scheme: "https", host: "open.larksuite.com", port: 443, base: base))
+
+        let secure = URL(string: "https://example.com")!
+        XCTAssertTrue(CompanionConfig.originMatches(
+            scheme: "https", host: "example.com", port: 0, base: secure))
     }
 
     func testNavigationAllowsTheOriginAndSignInHosts() {

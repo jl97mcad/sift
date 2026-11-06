@@ -1,6 +1,25 @@
 import Foundation
 import WebKit
 
+enum CompanionPath {
+    static let fallback = "/companion/app"
+
+    static func accepted(_ raw: String?) -> String {
+        guard let raw else { return fallback }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return fallback }
+        let normalized = trimmed.hasPrefix("/") ? trimmed : "/" + trimmed
+        let boundary = normalized.firstIndex { $0 == "?" || $0 == "#" } ?? normalized.endIndex
+        let path = String(normalized[..<boundary])
+        let suffix = String(normalized[boundary...])
+        let decoded = path.removingPercentEncoding ?? path
+        let segments = decoded.split(separator: "/", omittingEmptySubsequences: false)
+        guard decoded.hasPrefix("/companion/"),
+              !segments.contains(where: { $0 == ".." || $0 == "." }) else { return fallback }
+        return path + suffix
+    }
+}
+
 enum CompanionConfig {
     static func validatedURL(_ raw: String) -> URL? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -16,15 +35,16 @@ enum CompanionConfig {
     }
 
     static func targetURL(base: URL, path: String?) -> URL? {
-        guard let path = path?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty else {
-            return base
-        }
-        let normalized = path.hasPrefix("/") ? path : "/" + path
-        guard let target = URL(string: normalized, relativeTo: base)?.absoluteURL,
-              target.scheme?.lowercased() == base.scheme?.lowercased(),
-              target.host?.lowercased() == base.host?.lowercased(),
-              target.port == base.port else { return nil }
-        return target
+        URL(string: CompanionPath.accepted(path), relativeTo: base)?.absoluteURL
+    }
+
+    static func originMatches(scheme: String, host: String, port: Int, base: URL) -> Bool {
+        guard let baseScheme = base.scheme?.lowercased(),
+              let baseHost = base.host?.lowercased() else { return false }
+        let originScheme = scheme.lowercased()
+        let basePort = base.port ?? (baseScheme == "https" ? 443 : 80)
+        let originPort = port == 0 ? (originScheme == "https" ? 443 : 80) : port
+        return originScheme == baseScheme && host.lowercased() == baseHost && originPort == basePort
     }
 }
 
