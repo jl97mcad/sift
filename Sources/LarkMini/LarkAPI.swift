@@ -500,8 +500,8 @@ actor LarkAPI {
         let mentionList = (raw["mentions"] as? [[String: Any]] ?? []).prefix(100)
         var mentionNames: [String: String] = [:]
         for mention in mentionList {
-            if let key = mention["key"] as? String, let name = mention["name"] as? String {
-                mentionNames[key] = name
+            if let key = mention["key"] as? String, key.count <= 50, let name = mention["name"] as? String {
+                mentionNames[key] = String(name.prefix(200))
             }
         }
         var text = ""
@@ -520,7 +520,7 @@ actor LarkAPI {
             text = "Photo"
         case "file", "folder":
             fileKey = type == "file" ? content["file_key"] as? String : nil
-            fileName = content["file_name"] as? String
+            fileName = (content["file_name"] as? String).map { String($0.prefix(500)) }
             text = fileName ?? (type == "file" ? "File" : "Folder")
             if type == "folder" { media = .other(type: type) }
         case "audio":
@@ -530,7 +530,7 @@ actor LarkAPI {
             text = "Voice message"
         case "media":
             fileKey = content["file_key"] as? String
-            fileName = content["file_name"] as? String ?? "Video \(id.suffix(6)).mp4"
+            fileName = (content["file_name"] as? String).map { String($0.prefix(500)) } ?? "Video \(id.suffix(6)).mp4"
             media = .video(cover: content["image_key"] as? String, seconds: seconds)
             text = "Video"
         case "sticker":
@@ -559,6 +559,8 @@ actor LarkAPI {
             text = text.replacingOccurrences(of: key, with: "@\(name)")
         }
         text = text.replacingOccurrences(of: "@_all", with: "@all")
+        // Last, after every substitution, so no type and no repeated mention gets past the limit.
+        text = Self.clip(text)
         let name = senderId == meId ? "You" : ""
         let nonEmpty = { (key: String) in (raw[key] as? String).flatMap { $0.isEmpty ? nil : $0 } }
         return ChatMessage(
@@ -590,9 +592,11 @@ actor LarkAPI {
 
     /// System events come as a template with named parts: "{from_user} invited {to_chatters}".
     static func systemText(_ content: [String: Any]) -> String {
-        guard var text = content["template"] as? String ?? content["text"] as? String else { return "System message" }
-        for (key, value) in content where key != "template" {
-            let names = (value as? [String]) ?? (value as? String).map { [$0] } ?? []
+        guard var text = (content["template"] as? String ?? content["text"] as? String).map({ clip($0, limit: 4_000) }) else {
+            return "System message"
+        }
+        for (key, value) in content.prefix(50) where key != "template" && key.count <= 50 {
+            let names = ((value as? [String]) ?? (value as? String).map { [$0] } ?? []).prefix(50).map { String($0.prefix(200)) }
             text = text.replacingOccurrences(of: "{\(key)}", with: names.joined(separator: ", "))
         }
         return text.replacingOccurrences(of: #"\{[a-z_]+\}"#, with: "someone", options: .regularExpression)
@@ -629,7 +633,11 @@ actor LarkAPI {
             if let object = node as? [String: Any] {
                 if object["tag"] as? String == "img", let key = object["image_key"] as? String { keys.append(key) }
                 guard depth < maxDepth else { continue }
-                push(object.keys.sorted().filter { $0 != "image_key" }.map { object[$0]! }, depth: depth)
+                // Sorted for a stable order only when the object fits the remaining budget; a larger
+                // one contributes just its first keys, read without copying the rest.
+                let room = maxNodes - visited - stack.count
+                let keys = object.count <= room ? object.keys.sorted() : Array(object.keys.prefix(max(0, room)))
+                push(keys.compactMap { $0 == "image_key" ? nil : object[$0] }, depth: depth)
             } else if let list = node as? [Any], depth < maxDepth {
                 push(list, depth: depth)
             }
@@ -645,7 +653,8 @@ actor LarkAPI {
     static func flattenRich(_ content: [String: Any], rows key: String) -> String {
         var body = content
         for _ in 0..<2 where body[key] == nil && body["title"] == nil {
-            guard let inner = body.keys.sorted().compactMap({ body[$0] as? [String: Any] }).first else { break }
+            // A locale wrapper has a handful of keys; a huge object is not one.
+            guard body.count <= 50, let inner = body.keys.sorted().compactMap({ body[$0] as? [String: Any] }).first else { break }
             body = inner
         }
         var lines: [String] = []

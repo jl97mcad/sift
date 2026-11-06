@@ -139,4 +139,31 @@ final class LarkFidelityTests: XCTestCase {
         XCTAssertLessThanOrEqual(card.count, LarkAPI.textLimit + 30)
         XCTAssertLessThan(Date().timeIntervalSince(started), 2, "only a bounded slice is walked")
     }
+
+    func testMentionsSystemTextAndSummariesAreClippedAfterSubstitution() throws {
+        let body = String(repeating: "@_user_1 ", count: 5_000)
+        let raw: [String: Any] = ["message_id": "om_1", "msg_type": "text", "create_time": "1",
+            "body": ["content": "{\"text\":\"\(body)\"}"], "sender": [:],
+            "mentions": [["key": "@_user_1", "name": String(repeating: "N", count: 10_000)]]]
+        let mentioned = try XCTUnwrap(LarkAPI.parseMessage(raw, chatId: "c", meId: "me"))
+        XCTAssertLessThanOrEqual(mentioned.text.count, LarkAPI.textLimit + 30)
+        XCTAssertTrue(mentioned.text.hasPrefix("@" + String(repeating: "N", count: 200) + " "), "names are bounded")
+        let names = (0..<1_000).map { _ in String(repeating: "x", count: 1_000) }
+        let template = String(repeating: "{from_user} ", count: 2_000)
+        let system: [String: Any] = ["message_id": "om_2", "msg_type": "system", "create_time": "1", "sender": [:],
+            "body": ["content": String(data: try JSONSerialization.data(withJSONObject: ["template": template, "from_user": names]), encoding: .utf8)!]]
+        XCTAssertLessThanOrEqual(try XCTUnwrap(LarkAPI.parseMessage(system, chatId: "c", meId: "me")).text.count, LarkAPI.textLimit + 30)
+        let other = try message("vote", "{\"topic\":\"\(String(repeating: "t", count: 100_000))\"}")
+        XCTAssertLessThanOrEqual(other.text.count, LarkAPI.textLimit + 30)
+    }
+
+    func testAWideObjectIsNotCopiedWholeBeforeTheNodeBudget() {
+        var wide: [String: Any] = [:]
+        for index in 0..<100_000 { wide["k\(index)"] = ["tag": "img", "image_key": "i\(index)"] }
+        let started = Date()
+        XCTAssertLessThan(LarkAPI.embeddedImages(wide, maxNodes: 100).count, 100)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 0.5)
+        XCTAssertEqual(LarkAPI.embeddedImages(["b": ["tag": "img", "image_key": "2"], "a": ["tag": "img", "image_key": "1"]]),
+                       ["1", "2"], "objects within the budget keep a stable key order")
+    }
 }
