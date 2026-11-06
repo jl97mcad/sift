@@ -18,19 +18,29 @@ enum ChildProcess {
         var fds: [Int32] = [-1, -1]
         guard pipe(&fds) == 0 else { throw LaunchError(code: errno) }
         let (readEnd, writeEnd) = (fds[0], fds[1])
+        func fail(_ code: Int32) -> LaunchError { close(readEnd); close(writeEnd); return LaunchError(code: code) }
+        // Non-blocking before the spawn, so a failure here cannot leave a child behind.
+        let flags = fcntl(readEnd, F_GETFL)
+        guard flags >= 0, fcntl(readEnd, F_SETFL, flags | O_NONBLOCK) == 0 else { throw fail(errno) }
 
         var actions: posix_spawn_file_actions_t?
-        posix_spawn_file_actions_init(&actions)
-        defer { posix_spawn_file_actions_destroy(&actions) }
-        posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
-        posix_spawn_file_actions_adddup2(&actions, writeEnd, 1)
-        posix_spawn_file_actions_adddup2(&actions, writeEnd, 2)
         var attributes: posix_spawnattr_t?
-        posix_spawnattr_init(&attributes)
+        var code = posix_spawn_file_actions_init(&actions)
+        guard code == 0 else { throw fail(code) }
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        code = posix_spawnattr_init(&attributes)
+        guard code == 0 else { throw fail(code) }
         defer { posix_spawnattr_destroy(&attributes) }
         // Own group (pgid = pid) so every descendant can be signalled; no other fds leak in.
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
-        posix_spawnattr_setpgroup(&attributes, 0)
+        // Any setup step that fails stops the launch: a child without its group could escape cleanup.
+        for step in [{ posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0) },
+                     { posix_spawn_file_actions_adddup2(&actions, writeEnd, 1) },
+                     { posix_spawn_file_actions_adddup2(&actions, writeEnd, 2) },
+                     { posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)) },
+                     { posix_spawnattr_setpgroup(&attributes, 0) }] {
+            code = step()
+            guard code == 0 else { throw fail(code) }
+        }
 
         let argv = ([path] + arguments).map { strdup($0) } + [nil]
         let envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
@@ -39,11 +49,25 @@ enum ChildProcess {
         let spawned = posix_spawn(&pid, path, &actions, &attributes, argv, envp)
         close(writeEnd)
         guard spawned == 0 else { close(readEnd); throw LaunchError(code: spawned) }
-        _ = fcntl(readEnd, F_SETFL, fcntl(readEnd, F_GETFL) | O_NONBLOCK)
 
         return await withCheckedContinuation { continuation in
             Run(pid: pid, fd: readEnd, timeout: timeout, grace: grace, continuation: continuation).start()
         }
+    }
+
+    /// Blocks until the child exits without reaping it: the zombie keeps its pid and group id taken.
+    static func awaitExit(_ pid: pid_t) {
+        var info = siginfo_t()
+        while waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT) == -1 && errno == EINTR {}
+    }
+
+    /// After `awaitExit`: kills what is left of the group, then reaps and returns the status.
+    /// Call it on the queue that sends the group's signals; after it, no signal may follow.
+    static func reap(_ pid: pid_t) -> Int32 {
+        kill(-pid, SIGKILL)
+        var raw: Int32 = 0
+        while waitpid(pid, &raw, 0) == -1 && errno == EINTR {}
+        return (raw & 0x7f) == 0 ? (raw >> 8) & 0xff : 128 + (raw & 0x7f)
     }
 
     private final class Run {
@@ -70,27 +94,22 @@ enum ChildProcess {
             source.setCancelHandler { [fd] in close(fd) }
             self.source = source
             source.resume()
-            // Observe the exit without reaping: while the zombie holds the pid, the group id
-            // cannot be reused, so killing leftovers cannot hit an unrelated process.
             DispatchQueue.global().async { [self] in
-                var info = siginfo_t()
-                while waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT) == -1 && errno == EINTR {}
-                kill(-pid, SIGKILL)
-                var raw: Int32 = 0
-                while waitpid(pid, &raw, 0) == -1 && errno == EINTR {}
+                ChildProcess.awaitExit(pid)
+                // Reaped on the queue that sends signals, so no signal can follow the reap.
                 queue.async { [self] in
-                    status = (raw & 0x7f) == 0 ? (raw >> 8) & 0xff : 128 + (raw & 0x7f)
+                    status = ChildProcess.reap(pid)
                     finishIfDone()
                     // A descendant that left the group can hold the pipe open; stop waiting for it.
                     queue.asyncAfter(deadline: .now() + grace) { [self] in finish() }
                 }
             }
             queue.asyncAfter(deadline: .now() + timeout) { [self] in
-                guard continuation != nil else { return }
+                guard continuation != nil, status == nil else { return }
                 timedOut = true
                 kill(-pid, SIGTERM)
                 queue.asyncAfter(deadline: .now() + grace) { [self] in
-                    guard continuation != nil else { return }
+                    guard continuation != nil, status == nil else { return }
                     kill(-pid, SIGKILL)
                     queue.asyncAfter(deadline: .now() + grace) { [self] in finish() }
                 }
