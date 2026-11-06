@@ -185,6 +185,18 @@ enum BrandIcon {
     }
 }
 
+struct CompanionMark: View {
+    var size: CGFloat = 28
+
+    var body: some View {
+        Image(systemName: "building.2")
+            .font(.system(size: size * 0.52, weight: .medium))
+            .foregroundStyle(SiftStyle.green)
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+}
+
 /// An agent mark, shared by the rail and conversation heading.
 struct ControlMark: View {
     var size: CGFloat = 28

@@ -13,7 +13,7 @@ struct RailView: View {
                     Text("Inbox").font(.system(size: 11, weight: .medium))
                 }
                 .frame(width: 48, height: 58)
-                .background(selection(store.openChat == nil && !store.controlOpen && !store.companionOpen && !store.showingSettings))
+                .background(selection(store.openChat == nil && !store.controlOpen && !store.showingSettings))
             }
             .buttonStyle(.plain)
             .help("Inbox (⌘0)")
@@ -27,11 +27,10 @@ struct RailView: View {
                         .lineLimit(1).minimumScaleFactor(0.75)
                 }
                 .frame(width: 48, height: 54)
-                .background(selection(store.companionOpen && !store.showingSettings))
             }
             .buttonStyle(.plain)
-            .help("Companion shops and Ollie")
-            .accessibilityLabel("Companion shops and Ollie")
+            .help("Open Companion")
+            .accessibilityLabel("Open Companion")
 
             if store.controlSeat != nil {
                 Button { store.openControl() } label: {

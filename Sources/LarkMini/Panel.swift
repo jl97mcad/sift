@@ -121,10 +121,6 @@ final class PanelController {
                     self.store.closeControl()
                     return
                 }
-                if self.store.companionOpen {
-                    self.store.closeCompanion()
-                    return
-                }
                 if self.store.openChat != nil {
                     self.store.closeConversation()
                     return

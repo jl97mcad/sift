@@ -13,12 +13,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var editMonitor: Any?
     private var keyMonitor: Any?
 
-    init(demo: Bool, openDemoChat: Bool = false, openDemoControl: Bool = false, openDemoCompanion: Bool = false, openDemoSearch: Bool = false, demoNeedsYou: Bool = false) {
+    init(demo: Bool, openDemoChat: Bool = false, openDemoControl: Bool = false, openDemoSearch: Bool = false, demoNeedsYou: Bool = false) {
         demoMode = demo
         store = demo ? Store.demo(needsYou: demoNeedsYou) : Store()
         if demo && openDemoChat { store.openChat = store.chats.first }
         if demo && openDemoControl { store.controlOpen = true }
-        if demo && openDemoCompanion { store.companionOpen = true }
         if demo && openDemoSearch {
             store.searchOpen = true
         }
@@ -50,6 +49,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.hotKey = hotKey
         if store.isExpanded {
             panelController.expand()
+        }
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            if url.scheme == "sift", url.host == "companion" {
+                let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first { $0.name == "path" }?.value
+                panelController.expand()
+                store.openCompanion(path: path)
+            } else if let id = ChatLinks.chatId(from: url) {
+                panelController.expand()
+                store.openLinkedChat(id)
+            }
         }
     }
 

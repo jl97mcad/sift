@@ -12,6 +12,7 @@ final class Store: ObservableObject {
     @Published private(set) var lastSeen: [String: String] = [:]
     @Published private(set) var messages: [String: [ChatMessage]] = [:]
     @Published private(set) var auth: AuthState = .unknown
+    @Published private(set) var companionURL: String?
     @Published private(set) var me: Me?
     @Published var openChat: Chat?
     @Published var isExpanded = true {
@@ -51,8 +52,6 @@ final class Store: ObservableObject {
     @Published var memberNames: [String: String] = [:]
     @Published private(set) var chatLinks = ChatLinks(chats: [])
     private var directory: [Chat] = []
-    let companion = CompanionStore(client: MockCompanionAPIClient())
-    @Published var companionOpen = false
     @Published var controlSeat: ControlSeat?
     @Published var controlMessages: [AgentMessage] = []
     @Published private(set) var controlTimeline: [ControlEntry] = []
@@ -151,6 +150,7 @@ final class Store: ObservableObject {
         lastSeen = state.lastSeen
         adoptSeat(state.control)
         muted = state.muted
+        companionURL = state.companionURL
         let saved = DraftFile.load()
         drafts = saved.chats
         controlDraft = saved.control
@@ -188,6 +188,7 @@ final class Store: ObservableObject {
         if state.control != controlSeat {
             adoptSeat(state.control)
             if state.control == nil { controlOpen = false } }
+        if state.companionURL != companionURL { companionURL = state.companionURL }
         if tokens.tokens != nil, auth == .signedOut { auth = .signedIn }
         if tokens.tokens == nil, auth == .signedIn { auth = .signedOut }
     }
@@ -603,7 +604,6 @@ final class Store: ObservableObject {
         showingSettings = false
         openChat = nil
         controlOpen = false
-        companionOpen = false
     }
 
     func closeSearch() {
@@ -704,7 +704,6 @@ final class Store: ObservableObject {
     func open(_ chat: Chat) {
         showingSettings = false
         controlOpen = false
-        companionOpen = false
         if searchOpen { closeSearch() }
         openChat = chat
         if !chat.isP2P { Task { await resolveMembers(chat) } }
@@ -719,7 +718,6 @@ final class Store: ObservableObject {
     func showInbox() {
         showingSettings = false
         controlOpen = false
-        companionOpen = false
         openChat = nil
         showAllChats = false
         if searchOpen { closeSearch() }
@@ -970,7 +968,6 @@ final class Store: ObservableObject {
     func openControl() {
         if searchOpen { closeSearch() }
         controlOpen = true
-        companionOpen = false
         showingSettings = false
         openChat = nil
         markControlRead()
@@ -981,17 +978,20 @@ final class Store: ObservableObject {
         controlOpen = false
     }
 
-    func openCompanion() {
-        if searchOpen { closeSearch() }
-        companionOpen = true
-        controlOpen = false
-        showingSettings = false
-        openChat = nil
-        Task { await companion.load() }
+    var companionConfigured: Bool {
+        companionURL.flatMap(CompanionConfig.validatedURL) != nil
     }
 
-    func closeCompanion() {
-        companionOpen = false
+    func openCompanion(path: String? = nil) {
+        let state = stateFile.reload()
+        companionURL = state.companionURL
+        guard let raw = state.companionURL,
+              let base = CompanionConfig.validatedURL(raw) else {
+            errorText = "Set a Companion URL with: sift companion set --url http://host:port"
+            return
+        }
+        errorText = nil
+        CompanionWindowController.shared.open(baseURL: base, path: path)
     }
 
     var canLoadEarlierControl: Bool { controlHasOlder && controlTail < Self.controlMaxTail }

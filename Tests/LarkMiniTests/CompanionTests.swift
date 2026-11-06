@@ -2,74 +2,50 @@ import XCTest
 @testable import LarkMini
 
 final class CompanionTests: XCTestCase {
-    func testMockProvidesAssignedShopsAndBothUnreadKinds() async throws {
-        let client = MockCompanionAPIClient(deltaDelayNanoseconds: 0)
-        let shops = try await client.assignedShops()
-        XCTAssertFalse(shops.isEmpty)
-        let chats = try await client.unreadChats(shopId: shops[0].id)
-        XCTAssertTrue(chats.contains { $0.kind == .lark })
-        XCTAssertTrue(chats.contains { $0.kind == .shopAgent })
-        let plans = try await client.plans(shopId: shops[0].id)
-        XCTAssertTrue(plans.contains(where: \.isOpen))
+    func testURLValidationAcceptsHTTPAndHTTPSOnly() {
+        XCTAssertEqual(CompanionConfig.validatedURL("http://100.113.131.96:8090")?.absoluteString,
+                       "http://100.113.131.96:8090")
+        XCTAssertEqual(CompanionConfig.validatedURL(" https://example.com/companion ")?.absoluteString,
+                       "https://example.com/companion")
+        XCTAssertNil(CompanionConfig.validatedURL("ftp://example.com"))
+        XCTAssertNil(CompanionConfig.validatedURL("javascript:alert(1)"))
+        XCTAssertNil(CompanionConfig.validatedURL("example.com"))
+        XCTAssertNil(CompanionConfig.validatedURL("https:///missing-host"))
+        XCTAssertNil(CompanionConfig.validatedURL("https://user:secret@example.com"))
+        XCTAssertNil(CompanionConfig.validatedURL(""))
     }
 
-    @MainActor
-    func testStoreLoadsFirstShopAndSwitches() async {
-        let store = CompanionStore(client: MockCompanionAPIClient(deltaDelayNanoseconds: 0))
-        await store.load()
-        XCTAssertEqual(store.selectedShopId, "north-studio")
-        XCTAssertFalse(store.unreadChats.isEmpty)
-        XCTAssertFalse(store.messages.isEmpty)
-        XCTAssertFalse(store.plans.isEmpty)
-
-        await store.selectShop("harbor-co")
-        XCTAssertEqual(store.selectedShopId, "harbor-co")
-        XCTAssertEqual(store.unreadChats.map(\.id), ["harbor-agent", "harbor-ops"])
-        XCTAssertEqual(store.plans.map(\.id), ["harbor-pause"])
+    func testTargetPathStaysOnTheConfiguredOrigin() {
+        let base = URL(string: "http://100.113.131.96:8090")!
+        XCTAssertEqual(CompanionConfig.targetURL(base: base, path: "/companion/app/abc/messages/management")?.absoluteString,
+                       "http://100.113.131.96:8090/companion/app/abc/messages/management")
+        XCTAssertEqual(CompanionConfig.targetURL(base: base, path: "companion/app/abc")?.absoluteString,
+                       "http://100.113.131.96:8090/companion/app/abc")
+        XCTAssertEqual(CompanionConfig.targetURL(base: base, path: nil), base)
+        XCTAssertNil(CompanionConfig.targetURL(base: base, path: "//example.com/elsewhere"))
     }
 
-    @MainActor
-    func testSendStreamsOllieReplyIntoTheTranscript() async {
-        let store = CompanionStore(client: MockCompanionAPIClient(deltaDelayNanoseconds: 0))
-        await store.load()
-        let before = store.messages.count
-        store.draft = "What needs me before handover?"
+    func testNavigationAllowsTheOriginAndSignInHosts() {
+        let base = URL(string: "http://100.113.131.96:8090")!
+        let policy = CompanionNavigationPolicy(baseURL: base, signInHosts: ["outlandish.com"])
 
-        await store.send()
+        XCTAssertEqual(policy.decision(for: URL(string: "http://100.113.131.96:8090/companion/app/abc")!), .allow)
+        XCTAssertEqual(policy.decision(for: URL(string: "http://100.113.131.96:8090/outlandish/sign-in")!), .allow)
+        XCTAssertEqual(policy.decision(for: URL(string: "https://outlandish.com/sign-in")!), .allow)
+        XCTAssertEqual(policy.decision(for: URL(string: "https://id.outlandish.com/login")!), .allow)
+        XCTAssertEqual(policy.decision(for: URL(string: "about:blank")!), .allow)
 
-        XCTAssertFalse(store.sending)
-        XCTAssertNil(store.streamingText)
-        XCTAssertTrue(store.draft.isEmpty)
-        XCTAssertEqual(store.messages.count, before + 2)
-        XCTAssertEqual(store.messages.suffix(2).map(\.author), [.you, .ollie])
-        XCTAssertTrue(store.messages.last?.text.contains("What needs me before handover?") == true)
+        let defaults = CompanionNavigationPolicy(baseURL: base)
+        XCTAssertEqual(defaults.decision(for: URL(string: "https://open.larksuite.com/open-apis/authen/v1/index")!), .allow)
     }
 
-    @MainActor
-    func testApproveMovesAPlanOutOfTheOpenList() async {
-        let store = CompanionStore(client: MockCompanionAPIClient(deltaDelayNanoseconds: 0))
-        await store.load()
-        guard let plan = store.openPlans.first else { return XCTFail("expected an open plan") }
+    func testNavigationSendsOtherLinksToTheBrowser() {
+        let policy = CompanionNavigationPolicy(baseURL: URL(string: "http://100.113.131.96:8090")!,
+                                               signInHosts: ["outlandish.com"])
 
-        await store.approve(plan)
-
-        XCTAssertNil(store.approvingPlanId)
-        XCTAssertEqual(store.plans.first { $0.id == plan.id }?.status, .approved)
-        XCTAssertFalse(store.openPlans.contains { $0.id == plan.id })
-    }
-
-    func testOllieAdapterRefusesUntilTheContractIsReviewed() async {
-        let client = OllieCompanionAPIClient(
-            baseURL: URL(string: "https://example.invalid")!, bearerToken: "test-token")
-        do {
-            _ = try await client.assignedShops()
-            XCTFail("the real adapter must not answer before the contract is reviewed")
-        } catch let error as CompanionAPIError {
-            guard case .notConfigured = error else {
-                return XCTFail("unexpected error: \(error)")
-            }
-        } catch {
-            XCTFail("unexpected error: \(error)")
-        }
+        XCTAssertEqual(policy.decision(for: URL(string: "https://example.com/report")!), .external)
+        XCTAssertEqual(policy.decision(for: URL(string: "http://100.113.131.96:8091/companion")!), .external)
+        XCTAssertEqual(policy.decision(for: URL(string: "https://notoutlandish.com/login")!), .external)
+        XCTAssertEqual(policy.decision(for: URL(string: "mailto:help@example.com")!), .external)
     }
 }
