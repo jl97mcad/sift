@@ -497,7 +497,7 @@ actor LarkAPI {
         let senderDict = raw["sender"] as? [String: Any] ?? [:]
         let senderId = senderDict["id"] as? String ?? ""
         let ts = Int64(raw["create_time"] as? String ?? "") ?? Int64(Self.number(raw["create_time"], in: 0...4_102_444_800_000))
-        let mentionList = raw["mentions"] as? [[String: Any]] ?? []
+        let mentionList = (raw["mentions"] as? [[String: Any]] ?? []).prefix(100)
         var mentionNames: [String: String] = [:]
         for mention in mentionList {
             if let key = mention["key"] as? String, let name = mention["name"] as? String {
@@ -512,7 +512,7 @@ actor LarkAPI {
         let seconds = Int(Self.number(content["duration"], in: 0...86_400_000)) / 1000
         switch type {
         case "text":
-            text = content["text"] as? String ?? ""
+            text = Self.clip(content["text"] as? String ?? "")
         case "post":
             text = Self.flattenRich(content, rows: "content")
         case "image":
@@ -640,6 +640,8 @@ actor LarkAPI {
     /// Lark's read API returns posts as `{title, content: [[element]]}` and cards in a reduced
     /// `{title, elements: [[element]]}` form; send-side posts can sit in a locale wrapper.
     /// Text, link targets, mentions and card text stay; card controls are named, not invented.
+    /// Bounded throughout: 200 rows of 200 elements, 4,000 characters per piece and the message
+    /// as a whole within `textLimit`; the rest stays in Lark.
     static func flattenRich(_ content: [String: Any], rows key: String) -> String {
         var body = content
         for _ in 0..<2 where body[key] == nil && body["title"] == nil {
@@ -647,14 +649,27 @@ actor LarkAPI {
             body = inner
         }
         var lines: [String] = []
-        if let title = body["title"] as? String, !title.isEmpty { lines.append(title) }
+        var total = 0
+        if let title = body["title"] as? String, !title.isEmpty { lines.append(clip(title, limit: 4_000)) }
         var controls = false
-        for row in body[key] as? [[[String: Any]]] ?? [] {
-            let line = row.map { inline($0, controls: &controls, depth: 0) }.joined()
-            if !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { lines.append(line) }
+        for row in (body[key] as? [[Any]] ?? []).prefix(200) {
+            guard total < textLimit else { break }
+            let line = row.prefix(200).compactMap { $0 as? [String: Any] }
+                .map { clip(inline($0, controls: &controls, depth: 0), limit: 4_000) }.joined()
+            if !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                lines.append(line)
+                total += line.count
+            }
         }
         if controls { lines.append("Buttons on this card work in Lark.") }
-        return lines.joined(separator: "\n")
+        return clip(lines.joined(separator: "\n"))
+    }
+
+    /// The most text one message shows in Sift.
+    static let textLimit = 20_000
+
+    static func clip(_ text: String, limit: Int = textLimit) -> String {
+        text.count > limit ? String(text.prefix(limit)) + "\n… (the rest is in Lark)" : text
     }
 
     private static func inline(_ element: [String: Any], controls: inout Bool, depth: Int) -> String {
@@ -675,7 +690,7 @@ actor LarkAPI {
         case "note":
             // Notes nest one level in practice; deeper nesting is cut off, not followed.
             guard depth < 4 else { return "" }
-            return (element["elements"] as? [[String: Any]] ?? []).map { inline($0, controls: &controls, depth: depth + 1) }.joined(separator: " ")
+            return (element["elements"] as? [[String: Any]] ?? []).prefix(50).map { clip(inline($0, controls: &controls, depth: depth + 1), limit: 4_000) }.joined(separator: " ")
         case "button", "select_static", "select_person", "multi_select_static", "multi_select_person",
              "overflow", "date_picker", "picker_time", "picker_datetime", "input", "checker":
             controls = true

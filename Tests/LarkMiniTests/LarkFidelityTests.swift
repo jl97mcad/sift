@@ -126,4 +126,17 @@ final class LarkFidelityTests: XCTestCase {
         let wide: [Any] = Array(repeating: ["tag": "img", "image_key": "k"], count: 1_000_000)
         XCTAssertEqual(LarkAPI.embeddedImages(wide, maxNodes: 100).count, 99, "the list itself is one of the 100 nodes")
     }
+
+    func testRichAndPlainTextStayWithinTheirLimits() throws {
+        let long = String(repeating: "a", count: 100_000)
+        let plain = try message("text", "{\"text\":\"\(long)\"}")
+        XCTAssertLessThanOrEqual(plain.text.count, LarkAPI.textLimit + 30)
+        XCTAssertTrue(plain.text.hasSuffix("the rest is in Lark)"))
+        let element: [String: Any] = ["tag": "a", "text": String(repeating: "b", count: 10_000), "href": "https://example.com"]
+        let rows: [[Any]] = Array(repeating: Array(repeating: element, count: 1_000), count: 1_000)
+        let started = Date()
+        let card = LarkAPI.flattenRich(["title": long, "elements": rows], rows: "elements")
+        XCTAssertLessThanOrEqual(card.count, LarkAPI.textLimit + 30)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2, "only a bounded slice is walked")
+    }
 }

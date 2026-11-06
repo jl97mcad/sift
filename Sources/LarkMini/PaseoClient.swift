@@ -413,45 +413,66 @@ final class PaseoClient {
     const {selectDaemonTarget} = await load('/utils/daemon-target.js');
     const {fetchAllAgents} = await load('/utils/agent-directory.js');
     // Every value is bounded: long text keeps its start and end (a command's failure is usually at
-    // the end), lists and objects keep 60 items, depth stops at 5 (checked before lists and
-    // objects alike) and each value spends at most `budget` characters.
+    // the end), lists and objects stop after 60 items without copying the rest, depth stops at 5
+    // (checked before lists and objects alike) and each value spends at most `budget`
+    // characters, keys included, charged before their value is walked.
     const bound = (value, budget = 20000) => {
       let left = budget;
+      const text = (v) => {
+        let t = v.length > 1500 ? v.slice(0, 900) + '\n…\n' + v.slice(-500) : v;
+        if (t.length > left) t = t.slice(0, Math.max(0, left)) + '…';
+        left -= t.length;
+        return t;
+      };
       const walk = (v, depth) => {
         if (left <= 0) return '…';
-        if (typeof v === 'string') {
-          let t = v.length > 1500 ? v.slice(0, 900) + '\n…\n' + v.slice(-500) : v;
-          if (t.length > left) t = t.slice(0, left) + '…';
-          left -= t.length;
-          return t;
-        }
+        if (typeof v === 'string') return text(v);
         if (v === null || typeof v !== 'object') { left -= 8; return v; }
         if (depth >= 5) { left -= 1; return '…'; }
         if (Array.isArray(v)) {
           const out = [];
-          for (const x of v.slice(0, 60)) { if (left <= 0) break; out.push(walk(x, depth + 1)); }
+          for (let i = 0; i < v.length && i < 60 && left > 0; i++) out.push(walk(v[i], depth + 1));
           return out;
         }
         const out = {};
-        for (const [k, x] of Object.entries(v).slice(0, 60)) { if (left <= 0) break; left -= k.length; out[k] = walk(x, depth + 1); }
+        let count = 0;
+        for (const k in v) {
+          if (!Object.prototype.hasOwnProperty.call(v, k)) continue;
+          if (count++ >= 60 || left <= 0) break;
+          const key = text(k);
+          out[key] = walk(v[k], depth + 1);
+        }
         return out;
       };
       return walk(value, 0);
     };
     const spoken = (text) => typeof text === 'string' && text.length > 20000 ? text.slice(0, 20000) + '\n\n… (the rest of this message is in Paseo)' : text;
-    // One budget for the whole reading: what is not the timeline is bounded first, then the
-    // timeline gets the rest. Details of the oldest steps go first, then the oldest entries.
+    // The reading is at most BUDGET UTF-8 bytes. Everything but the timeline is bounded in
+    // characters to at most a third of that (three bytes per character at worst); the timeline
+    // gets the rest: details of the oldest steps go first, then the oldest entries. The final
+    // serialized line is measured, so the limit holds whatever the estimates said.
     const BUDGET = 600000;
-    const fit = (entries, budget) => {
-      let size = JSON.stringify(entries).length, dropped = false;
-      for (let i = 0; size > budget && i < entries.length; i++) {
+    const bytes = (x) => Buffer.byteLength(typeof x === 'string' ? x : JSON.stringify(x), 'utf8');
+    const serialize = (rest, entries, older) => {
+      const sizes = entries.map(e => bytes(e) + 1);
+      let total = bytes({...rest, hasOlder:true, entries:[]}) + sizes.reduce((sum, size) => sum + size, 0);
+      for (let i = 0; total > BUDGET && i < entries.length; i++) {
         if (!entries[i].item) continue;
-        const before = JSON.stringify(entries[i]).length;
         entries[i].item = {type:entries[i].item.type, omitted:true};
-        size -= before - JSON.stringify(entries[i]).length;
+        const size = bytes(entries[i]) + 1;
+        total -= sizes[i] - size;
+        sizes[i] = size;
       }
-      while (size > budget && entries.length > 0) { size -= JSON.stringify(entries.shift()).length + 1; dropped = true; }
-      return dropped;
+      let start = 0;
+      while (total > BUDGET && start < entries.length) total -= sizes[start++];
+      let line = JSON.stringify({...rest, hasOlder:Boolean(older) || start > 0, entries:entries.slice(start)});
+      while (bytes(line) > BUDGET && start < entries.length) {
+        start = Math.min(entries.length, start + Math.max(1, Math.ceil((entries.length - start) / 10)));
+        line = JSON.stringify({...rest, hasOlder:true, entries:entries.slice(start)});
+      }
+      if (bytes(line) > BUDGET) line = JSON.stringify({status:rest.status, title:null, asks:{status:'unavailable', reason:'Control\'s reply was too large to read'},
+        permissions:[], needsInput:rest.needsInput, serverId:rest.serverId ?? null, hasOlder:true, entries:[], action:null});
+      return line;
     };
     const client = await connectToDaemon({target:selectDaemonTarget(host ? {host} : {}),timeout:10000});
     try {
@@ -463,19 +484,19 @@ final class PaseoClient {
       try {
         const listed = await client.listPlugins();
         const suite = (Array.isArray(listed) ? listed : listed?.plugins ?? []).find(p => p.id === 'control-plugins');
-        asks = suite?.status === 'running' ? bound(await client.invokePluginRpc('control-plugins', 'asks.open', {}), 100000) : {status:'off'};
+        asks = suite?.status === 'running' ? bound(await client.invokePluginRpc('control-plugins', 'asks.open', {}), 50000) : {status:'off'};
       } catch { asks = {status:'unavailable', reason:"This Control's plugins do not serve open asks yet"}; }
       const permissions = (agent.pendingPermissions ?? []).slice(0, 20).map(p => bound({id:String(p.id ?? ''), kind:p.kind ?? 'other',
         name:p.name ?? '', title:p.title ?? '', description:p.description ?? '', input:p.input ?? null,
-        detail:p.detail ?? null, actions:(p.actions ?? []).slice(0, 10).map(a => a.label)}, 10000)).filter(p => p.id);
+        detail:p.detail ?? null, actions:(p.actions ?? []).slice(0, 10).map(a => a.label)}, 3000)).filter(p => p.id);
       const base = {title:bound(agent.title ?? null, 2000), asks, permissions, needsInput:Boolean(agent.pendingPermissions?.length),
-        serverId:client.getLastServerInfoMessage?.()?.serverId ?? null};
+        serverId:bound(client.getLastServerInfoMessage?.()?.serverId ?? null, 200)};
       if (agent.archivedAt) {
         const live = seat ? (await fetchAllAgents(client, {filter:{labels:{seat}}}))
           .filter(a => !a.archivedAt && a.labels?.seat === seat) : [];
         const next = live.length === 1 && live[0].id !== agent.id ? live[0] : null;
-        process.stdout.write(JSON.stringify({...base, status:'archived', hasOlder:false, entries:[], action:null,
-          successor:next ? {id:next.id, title:bound(next.title ?? null, 2000)} : null}));
+        process.stdout.write(serialize({...base, status:'archived', action:null,
+          successor:next ? {id:String(next.id).slice(0, 200), title:bound(next.title ?? null, 2000)} : null}, [], false));
       } else {
         const timeline = await client.fetchAgentTimeline(agent.id,{direction:'tail',limit:Number(count),projection:'projected',timeout:10000});
         if (timeline.error) throw new Error('Paseo timeline is unavailable');
@@ -484,10 +505,10 @@ final class PaseoClient {
           return {id:e.item.messageId ?? `${timeline.epoch}:${e.seqStart}`, type:e.item.type, ts:Date.parse(e.timestamp) || null,
             text:said ? spoken(e.item.text) : undefined, item:said ? undefined : bound(e.item)};
         });
-        const trimmed = fit(entries, BUDGET - JSON.stringify(base).length);
+        // The current step is bounded too and counted with everything else before the timeline.
         const last = [...timeline.entries].reverse().find(e => e.item.type !== 'plugin')?.item;
-        process.stdout.write(JSON.stringify({...base, status:agent.status, hasOlder:Boolean(timeline.hasOlder) || trimmed, entries,
-          action:last ? {type:last.type, status:last.status, kind:last.detail?.type, name:last.name} : null}));
+        const action = last ? bound({type:last.type, status:last.status, kind:last.detail?.type, name:last.name}, 500) : null;
+        process.stdout.write(serialize({...base, status:bound(agent.status, 100), action}, entries, timeline.hasOlder));
       }
     } finally { await client.close(); }
     """#
