@@ -32,10 +32,8 @@ final class Store: ObservableObject {
     @Published var sending = false
     @Published var loadingOlder = false
     @Published var settings = Settings()
-    /// Unsent text survives quitting: device-local, like other preferences.
-    @Published var drafts = UserDefaults.standard.dictionary(forKey: "drafts") as? [String: String] ?? [:] {
-        didSet { if !isDemo { UserDefaults.standard.set(drafts.filter { !$0.value.isEmpty }, forKey: "drafts") } }
-    }
+    /// Unsent text survives quitting and crashes: a device-local 0600 file, saved on each change.
+    @Published var drafts: [String: String] = [:] { didSet { saveDrafts() } }
     @Published var search = ""
     @Published var remoteResults: [Chat] = []
     @Published var toasts: [ChatToast] = []
@@ -55,9 +53,7 @@ final class Store: ObservableObject {
     @Published var controlOpen = false
     @Published var controlBusy = false
     @Published var controlSending = false
-    @Published var controlDraft = UserDefaults.standard.string(forKey: "controlDraft") ?? "" {
-        didSet { if !isDemo { UserDefaults.standard.set(controlDraft, forKey: "controlDraft") } }
-    }
+    @Published var controlDraft = "" { didSet { saveDrafts() } }
     @Published var controlActivity: String?
     @Published private(set) var controlHasOlder = false
     @Published private(set) var controlNeedsInput = false
@@ -120,6 +116,10 @@ final class Store: ObservableObject {
         lastSeen = state.lastSeen
         adoptSeat(state.control)
         muted = state.muted
+        let saved = DraftFile.load()
+        drafts = saved.chats
+        controlDraft = saved.control
+        loadedDrafts = true
         if let cache = Cache.load() {
             chats = cache.chats
             previews = cache.previews
@@ -784,11 +784,27 @@ final class Store: ObservableObject {
             }
             sending = false
         }
-        if !failed.isEmpty { errorText = "Not sent — " + failed.joined(separator: "; ") }
+        reportUnsent(failed)
     }
 
     private var attachmentQueue: [(URL, String)] = []
     private var drainingAttachments = false
+
+    /// One error line names every file that did not go, however it failed.
+    func reportUnsent(_ failures: [String]) {
+        guard !failures.isEmpty else { return }
+        let prefix = "Not sent — "
+        let earlier = errorText?.hasPrefix(prefix) == true ? [String(errorText!.dropFirst(prefix.count))] : []
+        errorText = prefix + (earlier + failures).joined(separator: "; ")
+    }
+
+    private var loadedDrafts = false
+
+    private func saveDrafts() {
+        guard loadedDrafts, !isDemo else { return }
+        do { try DraftFile(chats: drafts, control: controlDraft).save() }
+        catch { errorText = "Drafts could not be saved: \(error.localizedDescription)" }
+    }
 
     private func append(_ message: ChatMessage, chatId: String) {
         var current = messages[chatId] ?? []

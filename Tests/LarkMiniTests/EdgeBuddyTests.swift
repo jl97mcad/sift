@@ -56,3 +56,33 @@ final class AttachmentQueueTests: XCTestCase {
         XCTAssertFalse(store.sending)
     }
 }
+
+final class DraftFileTests: XCTestCase {
+    func testDraftsSaveAs0600AndMoveOutOfPreferencesOnce() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("drafts.json")
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "sift-drafts-\(UUID().uuidString)"))
+        defaults.set(["c1": "half a thought"], forKey: "drafts")
+        defaults.set("ship it", forKey: "controlDraft")
+
+        XCTAssertEqual(DraftFile.load(from: url, defaults: defaults), DraftFile(chats: ["c1": "half a thought"], control: "ship it"))
+        XCTAssertNil(defaults.object(forKey: "drafts"))
+        XCTAssertNil(defaults.object(forKey: "controlDraft"))
+        let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int
+        XCTAssertEqual(mode, 0o600)
+
+        try DraftFile(chats: ["c1": "", "c2": "new"], control: "").save(to: url)
+        XCTAssertEqual(DraftFile.load(from: url, defaults: defaults), DraftFile(chats: ["c2": "new"], control: ""))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path), ["drafts.json"], "no staged file is left")
+    }
+
+    @MainActor
+    func testDropFailuresAddToTheSameNamedList() {
+        let store = Store.demo()
+        store.reportUnsent(["a.png: unreadable"])
+        store.reportUnsent(["b.pdf: unreadable"])
+        XCTAssertEqual(store.errorText, "Not sent — a.png: unreadable; b.pdf: unreadable")
+    }
+}

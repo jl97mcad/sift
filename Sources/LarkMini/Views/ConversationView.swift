@@ -30,10 +30,14 @@ struct ConversationView: View {
         }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             let target = chat.id
-            for provider in providers {
-                _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                    guard let url else { return }
+            for (index, provider) in providers.enumerated() {
+                let name = provider.suggestedName ?? "Dropped item \(index + 1)"
+                _ = provider.loadObject(ofClass: URL.self) { url, error in
                     DispatchQueue.main.async {
+                        guard let url else {
+                            store.reportUnsent(["\(name): \(error?.localizedDescription ?? "Sift could not read this item as a file")"])
+                            return
+                        }
                         Task { await store.sendAttachment(url, to: target) }
                     }
                 }
