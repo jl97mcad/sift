@@ -128,11 +128,18 @@ final class PaseoClient {
         try Self.readerScript.write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: script.path)
         defer { try? FileManager.default.removeItem(at: script) }
-        let output = try await run(["--disable-warning=DEP0040",
-            resources.appendingPathComponent("app.asar.unpacked/dist/daemon/node-entrypoint-runner.js").path,
-            "node-script", script.path,
-            resources.appendingPathComponent("app.asar/node_modules/@getpaseo/cli/dist").path,
-            agentId, host ?? "", String(max(1, min(200, tail)))], executablePath: helper.path)
+        let output: String
+        do {
+            output = try await run(["--disable-warning=DEP0040",
+                resources.appendingPathComponent("app.asar.unpacked/dist/daemon/node-entrypoint-runner.js").path,
+                "node-script", script.path,
+                resources.appendingPathComponent("app.asar/node_modules/@getpaseo/cli/dist").path,
+                agentId, host ?? "", String(max(1, min(200, tail)))], executablePath: helper.path)
+        } catch PaseoError.failed(let message) {
+            // The script's first line is the reason; its stack names temporary files.
+            let line = message.split(separator: "\n").first.map(String.init) ?? message
+            throw PaseoError.failed(line.hasPrefix("Error: ") ? String(line.dropFirst(7)) : line)
+        }
         guard let reading = Self.reading(output) else {
             throw PaseoError.failed("Paseo conversation data is unavailable. Refresh to retry.")
         }
@@ -171,7 +178,8 @@ final class PaseoClient {
     const {fetchAllAgents} = await load('/utils/agent-directory.js');
     const client = await connectToDaemon({target:selectDaemonTarget(host ? {host} : {}),timeout:10000});
     try {
-      const {agent} = await client.fetchAgent({agentId:id});
+      const agent = (await client.fetchAgent({agentId:id}))?.agent;
+      if (!agent) throw new Error(`No Paseo session ${id} on this host`);
       const seat = agent.labels?.seat;
       // Open asks come from the runner beside this daemon, through its control-plugins suite.
       let asks;
