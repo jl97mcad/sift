@@ -209,3 +209,24 @@ final class ControlSetTests: XCTestCase {
         XCTAssertEqual(ControlSeat.control(agentId: "z", title: "Session", name: "Ops", host: nil).label, "Ops")
     }
 }
+
+final class SeenListMigrationTests: XCTestCase {
+    @MainActor
+    func testOldGlobalSeenListsMoveToTheControlSeatOnceAndNeverToOtherSeats() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "sift-seen-\(UUID().uuidString)"))
+        defaults.set(["ask-1"], forKey: "seenAsks")
+        defaults.set(["perm-1"], forKey: "seenPermissions")
+        let control = ControlSeat(agentId: "c1", title: "Control")
+        SeatSession.migrateSeenLists(to: control, defaults: defaults)
+        XCTAssertEqual(defaults.stringArray(forKey: "seenAsks.c1"), ["ask-1"])
+        XCTAssertEqual(defaults.stringArray(forKey: "seenPermissions.c1"), ["perm-1"])
+        XCTAssertNil(defaults.stringArray(forKey: "seenAsks"))
+        XCTAssertNil(defaults.stringArray(forKey: "seenPermissions"))
+        XCTAssertNil(defaults.stringArray(forKey: "seenAsks.f1"), "a later seat starts with nothing seen")
+        // Running again changes nothing, and a seat's own list is never overwritten.
+        defaults.set(["ask-9"], forKey: "seenAsks")
+        SeatSession.migrateSeenLists(to: control, defaults: defaults)
+        XCTAssertEqual(defaults.stringArray(forKey: "seenAsks.c1"), ["ask-1"])
+        XCTAssertNil(defaults.stringArray(forKey: "seenAsks"))
+    }
+}

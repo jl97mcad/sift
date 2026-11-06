@@ -103,6 +103,7 @@ final class Store: ObservableObject {
         muted = state.muted
         let saved = DraftFile.load()
         drafts = saved.chats
+        SeatSession.migrateSeenLists(to: state.control)
         setSeats(state.seats)
         // Agents first: the panel opens on the first seat when there is one.
         selectedSeatId = seats.first?.id

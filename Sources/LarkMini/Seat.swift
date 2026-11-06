@@ -54,10 +54,8 @@ final class SeatSession: ObservableObject, Identifiable {
         self.config = config
         self.id = config.id
         self.store = store
-        // Before seats, seen needs were one list for the one Control; it carries over.
-        let defaults = UserDefaults.standard
-        seenPermissions = Set(defaults.stringArray(forKey: "seenPermissions.\(config.id)") ?? defaults.stringArray(forKey: "seenPermissions") ?? [])
-        seenAsks = Set(defaults.stringArray(forKey: "seenAsks.\(config.id)") ?? defaults.stringArray(forKey: "seenAsks") ?? [])
+        seenPermissions = Set(UserDefaults.standard.stringArray(forKey: "seenPermissions.\(config.id)") ?? [])
+        seenAsks = Set(UserDefaults.standard.stringArray(forKey: "seenAsks.\(config.id)") ?? [])
         // Older builds stored "Needs you" as a cue; it is live state now.
         attention = UserDefaults.standard.string(forKey: "controlAttention.\(config.id)").flatMap { $0 == "Needs you" ? nil : $0 }
     }
@@ -378,6 +376,18 @@ final class SeatSession: ObservableObject, Identifiable {
             draft = text
         }
         sending = false
+    }
+
+    /// Before seats, seen needs were one list for the one Control. They move to that seat once
+    /// and the global lists go, so a later seat never starts with another agent's seen state.
+    static func migrateSeenLists(to control: ControlSeat?, defaults: UserDefaults = .standard) {
+        for key in ["seenPermissions", "seenAsks"] {
+            guard let old = defaults.stringArray(forKey: key) else { continue }
+            if let control, defaults.stringArray(forKey: "\(key).\(control.id)") == nil {
+                defaults.set(old, forKey: "\(key).\(control.id)")
+            }
+            defaults.removeObject(forKey: key)
+        }
     }
 
     // MARK: - Demo
