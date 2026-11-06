@@ -103,7 +103,7 @@ enum CLI {
         if let agentId = flags.value("--agent-id") {
             let host = flags.value("--host")
             if let info = await PaseoClient().info(agentId: agentId, host: host) {
-                let seat = ControlSeat(agentId: agentId, title: flags.value("--title") ?? info.title, host: host)
+                let seat = ControlSeat.control(agentId: agentId, title: info.title, name: flags.value("--title"), host: host)
                 StateFile.shared.update { $0.control = seat }
                 payload["control"] = ["agent_id": seat.agentId, "title": seat.title,
                                       "host": host ?? "", "status": info.status]
@@ -279,9 +279,9 @@ enum CLI {
             guard let info = await client.info(agentId: agentId, host: flags.value("--host")) else {
                 return fail("No Paseo session found for \(agentId)")
             }
-            let seat = ControlSeat(agentId: agentId, title: flags.value("--title") ?? info.title,
-                                   host: flags.value("--host"),
-                                   provider: flags.value("--provider") ?? AgentProviders.fallback)
+            let seat = ControlSeat.control(agentId: agentId, title: info.title, name: flags.value("--title"),
+                                           host: flags.value("--host"),
+                                           provider: flags.value("--provider") ?? AgentProviders.fallback)
             state.update { $0.control = seat }
             return ok(["ok": true, "control": ["agent_id": seat.agentId, "title": seat.title, "status": info.status]])
         case "options", "find":

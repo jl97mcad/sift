@@ -107,7 +107,9 @@ final class Store: ObservableObject {
         // Agents first: the panel opens on the first seat when there is one.
         selectedSeatId = seats.first?.id
         controlOpen = !seats.isEmpty
-        if !saved.control.isEmpty, let first = seats.first, first.draft.isEmpty { first.draft = saved.control }
+        // The draft from before seats belonged to the one Control; it goes to that seat only.
+        if !saved.control.isEmpty, let control = state.control,
+           let seat = seats.first(where: { $0.id == control.id }), seat.draft.isEmpty { seat.draft = saved.control }
         loadedDrafts = true
         if let cache = Cache.load() {
             chats = cache.chats

@@ -197,3 +197,15 @@ final class SeatListTests: XCTestCase {
         XCTAssertNotEqual(FacePalette.named("pink"), .sift)
     }
 }
+
+final class ControlSetTests: XCTestCase {
+    func testControlSetNamesTheSeatSoItStaysAddressableAmongOthers() {
+        var state = AppState()
+        state.seats = [ControlSeat(agentId: "f1", title: "Finance"), ControlSeat(agentId: "g1", title: "God")]
+        state.control = ControlSeat.control(agentId: "x1", title: "Session 42", name: nil, host: nil)
+        XCTAssertEqual(state.control?.id, "x1")
+        XCTAssertEqual(state.control?.label, "Control")
+        XCTAssertEqual(ControlSeat.control(agentId: "y", title: "Jon's Control (AWS)", name: nil, host: nil).label, "Jon's Control (AWS)")
+        XCTAssertEqual(ControlSeat.control(agentId: "z", title: "Session", name: "Ops", host: nil).label, "Ops")
+    }
+}

@@ -236,6 +236,13 @@ struct ControlSeat: Codable, Equatable, Identifiable {
         self.provider = provider
     }
 
+    /// A seat added through `sift control set`: named so `control` still finds it among other seats.
+    static func control(agentId: String, title: String, name: String?, host: String?,
+                        provider: String = AgentProviders.fallback) -> ControlSeat {
+        let name = name ?? (title.localizedCaseInsensitiveContains("control") ? "" : "Control")
+        return ControlSeat(agentId: agentId, title: title, host: host, provider: provider, name: name)
+    }
+
     var label: String { name.isEmpty ? title : name }
     /// The Control seat is the one whose label says Control (Paseo titles them "Jon's Control (AWS)").
     var isControl: Bool { label.localizedCaseInsensitiveContains("control") }
