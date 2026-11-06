@@ -590,7 +590,11 @@ final class PaseoClient {
       createInterface({input:process.stdin}).on('line', (line) => {
         const [command, value] = line.trim().split(/\s+/);
         if (command === 'refresh') schedule(true);
-        else if (command === 'gap') gap = Math.max(1, Number(value) || 15) * 1000;
+        else if (command === 'gap') {
+          gap = Math.max(1, Number(value) || 15) * 1000;
+          // A change already waiting moves to the new deadline.
+          if (timer) { clearTimeout(timer); timer = null; schedule(false); }
+        }
         else if (command === 'tail') { tail = Math.max(1, Math.min(400, Number(value) || 80)); schedule(true); }
       }).on('close', () => process.exit(0));
       await emit();

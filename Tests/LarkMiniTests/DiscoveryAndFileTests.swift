@@ -22,6 +22,19 @@ final class DiscoveryAndFileTests: XCTestCase {
         XCTAssertEqual(ActivityOrder.changes(previous: before, current: ["e", "c", "a", "b", "d"]).moved, ["e", "c"])
     }
 
+    func testAMoverWhosePreviewFailedIsRetriedUntilReadOrReported() {
+        var state = ActivityOrder.settle(pending: [:], moved: ["d", "x"], read: ["x"], limit: 3)
+        XCTAssertEqual(state.pending, ["d": 1], "d moved but its preview failed")
+        XCTAssertEqual(state.abandoned, [])
+        // The order no longer moves for d, but the tick adds pending chats back to `moved`.
+        state = ActivityOrder.settle(pending: state.pending, moved: Set(state.pending.keys), read: [], limit: 3)
+        XCTAssertEqual(state.pending, ["d": 2])
+        XCTAssertEqual(ActivityOrder.settle(pending: state.pending, moved: ["d"], read: ["d"], limit: 3).pending, [:])
+        let given = ActivityOrder.settle(pending: state.pending, moved: ["d"], read: [], limit: 3)
+        XCTAssertEqual(given.pending, [:])
+        XCTAssertEqual(given.abandoned, ["d"], "given up chats are reported, not dropped silently")
+    }
+
     func testResourceURLUsesMessageAuthenticationEndpointAndEscapesSegments() {
         let url = LarkAPI.messageResourceURL(messageId: "m/id", key: "file?#%", type: "file")
         XCTAssertEqual(url.host, "open.larksuite.com")

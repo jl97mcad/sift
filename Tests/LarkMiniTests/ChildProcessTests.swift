@@ -64,6 +64,22 @@ final class ChildProcessTests: XCTestCase {
         try await Task.sleep(nanoseconds: 1_300_000_000)
         XCTAssertNotEqual(kill(grandchild, 0), 0, "the grandchild outlived the stream")
         stream.send("after stop")  // must not crash or raise SIGPIPE
+        // Stopping an exited stream signals nothing and still reports that the group is gone.
+        let gone = expectation(description: "stopped after exit")
+        stream.stop { gone.fulfill() }
+        await fulfillment(of: [gone], timeout: 2)
+    }
+
+    func testStopRunsItsCallbackOnlyAfterTheGroupHasExited() async throws {
+        final class Box: @unchecked Sendable { var exited = false }
+        let box = Box()
+        let done = expectation(description: "stopped")
+        let stream = try ChildStream("/bin/sh", ["-c", "trap '' TERM; while read l; do :; done; sleep 30"], environment: [:],
+                                     onLine: { _ in }, onExit: { _ in box.exited = true })
+        let started = Date()
+        stream.stop { XCTAssertTrue(box.exited, "the callback follows the exit"); done.fulfill() }
+        await fulfillment(of: [done], timeout: 5)
+        XCTAssertGreaterThan(Date().timeIntervalSince(started), 0.9, "a TERM-ignoring child needed the SIGKILL")
     }
 
     func testAnUnwaitableChildIsNeverSignalledOrGivenAStatus() async throws {

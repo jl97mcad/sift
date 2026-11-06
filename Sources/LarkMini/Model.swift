@@ -346,4 +346,16 @@ enum ActivityOrder {
         for id in Array(current.prefix(top)) + current.filter(moved.contains) where !refresh.contains(id) { refresh.append(id) }
         return (refresh, moved)
     }
+
+    /// Moved chats whose preview was not read stay pending, counting failed polls; after `limit`
+    /// (about five minutes at the default interval) they are given up and returned to be reported.
+    static func settle(pending: [String: Int], moved: Set<String>, read: Set<String>,
+                       limit: Int = 60) -> (pending: [String: Int], abandoned: [String]) {
+        var next = pending
+        for id in moved where !read.contains(id) { next[id, default: 0] += 1 }
+        for id in read { next[id] = nil }
+        let abandoned = next.filter { $0.value >= limit }.map(\.key).sorted()
+        abandoned.forEach { next[$0] = nil }
+        return (next, abandoned)
+    }
 }

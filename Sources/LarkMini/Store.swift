@@ -64,6 +64,9 @@ final class Store: ObservableObject {
     private var watchGeneration = 0
     private var watchFailures = 0
     private var watchRestart: Task<Void, Never>?
+    /// A stopped helper whose group has not exited yet; its replacement waits for it.
+    private var retiringWatch: ChildStream?
+    private var watchStartWaiting = false
     private var started = false
     nonisolated static let controlPage = 80
     nonisolated static let controlMaxTail = 400
@@ -131,6 +134,9 @@ final class Store: ObservableObject {
     private var fetchingChats = false
     /// The top of Lark's activity-sorted chat list at the last poll.
     private var activityOrder: [String] = []
+    /// Chats that moved up but whose preview could not be read yet, with failed attempts.
+    /// They are retried every poll, since the order will not move again for the same message.
+    private var pendingMovers: [String: Int] = [:]
     private var olderTokens: [String: String] = [:]
     private var isDemo = false
 
@@ -244,7 +250,15 @@ final class Store: ObservableObject {
         } else {
             ids.formUnion(pinned)  // the list read failed: the pins are still checked
         }
-        await refreshPreviews(Array(ids), moved: moved)
+        moved.formUnion(pendingMovers.keys)
+        ids.formUnion(moved)
+        let read = await refreshPreviews(Array(ids), moved: moved)
+        let abandoned: [String]
+        (pendingMovers, abandoned) = ActivityOrder.settle(pending: pendingMovers, moved: moved, read: read)
+        if !abandoned.isEmpty {
+            let names = abandoned.map { id in chats.first { $0.id == id }?.displayName ?? "a chat" }
+            errorText = "Could not read new messages in " + names.joined(separator: ", ") + ". Open the chat to retry."
+        }
         if let chat = openChat {
             await refreshOpenChat(chat)
         }
@@ -293,6 +307,7 @@ final class Store: ObservableObject {
         pageToken = nil
         loadedFirstPage = false
         activityOrder = []
+        pendingMovers = [:]
         memberNames = [:]
         me = nil
         auth = .signedOut
@@ -412,22 +427,21 @@ final class Store: ObservableObject {
     /// Only what the panel actually shows: the pinned icons and the open chat.
     /// `moved` chats rose in the activity order, so their newest message is new even without an
     /// earlier preview or read marker.
-    private func refreshPreviews(_ ids: [String], moved: Set<String> = []) async {
-        guard auth == .signedIn, !isDemo else { return }
-        await withTaskGroup(of: (String, Preview?).self) { group in
+    /// Returns the chats whose newest message was read (an empty chat counts as read).
+    @discardableResult
+    private func refreshPreviews(_ ids: [String], moved: Set<String> = []) async -> Set<String> {
+        guard auth == .signedIn, !isDemo else { return [] }
+        var read = Set<String>()
+        await withTaskGroup(of: (String, Preview?, Bool).self) { group in
             var iterator = ids.makeIterator()
             var inflight = 0
             while inflight < 10, let id = iterator.next() {
                 inflight += 1
-                group.addTask { [api] in
-                    let message = try? await api.latestMessage(chatId: id)
-                    guard let message else { return (id, nil) }
-                    let text = Self.previewText(for: message)
-                    return (id, Preview(text: text, ts: message.ts, messageId: message.id, fromMe: message.isMine))
-                }
+                group.addTask { [api] in await Self.readPreview(api, id) }
             }
             while let result = await group.next() {
                 inflight -= 1
+                if result.2 { read.insert(result.0) }
                 if let preview = result.1 {
                     // Keep a newer preview, and skip unchanged ones so the list does not redraw every tick.
                     if let existing = self.previews[result.0], existing.ts > preview.ts || existing == preview {
@@ -449,14 +463,20 @@ final class Store: ObservableObject {
                 }
                 if let id = iterator.next() {
                     inflight += 1
-                    group.addTask { [api] in
-                        let message = try? await api.latestMessage(chatId: id)
-                        guard let message else { return (id, nil) }
-                        let text = Self.previewText(for: message)
-                        return (id, Preview(text: text, ts: message.ts, messageId: message.id, fromMe: message.isMine))
-                    }
+                    group.addTask { [api] in await Self.readPreview(api, id) }
                 }
             }
+        }
+        return read
+    }
+
+    /// The newest message as a preview; `read` is false only when the request failed.
+    nonisolated private static func readPreview(_ api: LarkAPI, _ id: String) async -> (String, Preview?, Bool) {
+        do {
+            guard let message = try await api.latestMessage(chatId: id) else { return (id, nil, true) }
+            return (id, Preview(text: previewText(for: message), ts: message.ts, messageId: message.id, fromMe: message.isMine), true)
+        } catch {
+            return (id, nil, false)
         }
     }
 
@@ -1093,6 +1113,8 @@ final class Store: ObservableObject {
 
     private func startControlWatch() {
         stopControlWatch()
+        // One helper per seat: a replacement starts only once the old helper's group is gone.
+        if retiringWatch != nil { watchStartWaiting = true; return }
         guard started, !isDemo, let seat = controlSeat, seat.provider == "paseo" else { return }
         let generation = watchGeneration
         let current = { [weak self] in self?.watchGeneration == generation && self?.controlSeat == seat }
@@ -1166,8 +1188,19 @@ final class Store: ObservableObject {
         watchGeneration += 1
         watchRestart?.cancel()
         watchRestart = nil
-        controlWatch?.stop()
+        guard let watch = controlWatch else { return }
         controlWatch = nil
+        retiringWatch = watch
+        watch.stop { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.retiringWatch === watch else { return }
+                self.retiringWatch = nil
+                if self.watchStartWaiting {
+                    self.watchStartWaiting = false
+                    self.startControlWatch()
+                }
+            }
+        }
     }
 
     /// Transcript changes reach an open Control within 3 s; elsewhere at most every 15 s.

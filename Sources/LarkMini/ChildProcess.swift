@@ -200,38 +200,50 @@ enum ChildProcess {
 final class ChildStream: @unchecked Sendable {
     private let pid: pid_t
     private let input: Int32
-    private let source: DispatchSourceRead
+    private let output: Int32
+    private let onLine: (Data) -> Void
+    private var source: DispatchSourceRead?
+    /// Owns every signal, read and reap for this child, so no signal can follow the reap.
     private let queue = DispatchQueue(label: "sift.stream")
     private var buffer = Data()
     private var stopped = false
-    /// Set once the child is reaped; no signal goes to its group id after that.
+    /// Set on `queue` in the same step as the reap; no signal goes to the group after that.
     private var exited = false
+    private var exitWaiters: [() -> Void] = []
 
     /// `onLine` and `onExit` run on the main queue; `onExit` gets the exit status once (nil when
     /// the exit could not be observed).
     init(_ path: String, _ arguments: [String], environment: [String: String],
          onLine: @escaping (Data) -> Void, onExit: @escaping (Int32?) -> Void) throws {
         let (pid, output, input) = try ChildProcess.spawn(path, arguments, environment: environment, input: true)
-        (self.pid, self.input) = (pid, input!)
-        source = DispatchSource.makeReadSource(fileDescriptor: output, queue: queue)
-        source.setEventHandler { [weak self] in self?.drain(output, onLine) }
+        (self.pid, self.input, self.output, self.onLine) = (pid, input!, output, onLine)
+        let source = DispatchSource.makeReadSource(fileDescriptor: output, queue: queue)
+        source.setEventHandler { [weak self] in self?.drain() }
         source.setCancelHandler { close(output) }
+        self.source = source
         source.resume()
-        DispatchQueue.global().async { [weak self, source, queue] in
+        DispatchQueue.global().async { [self] in
             let waitable = ChildProcess.awaitExit(pid)
-            queue.async {
+            queue.async { [self] in
+                drain()  // the last lines it wrote
                 let status = waitable ? ChildProcess.reap(pid) : nil
-                self?.exited = true
-                source.cancel()
-                DispatchQueue.main.async { onExit(status) }
+                exited = true
+                self.source?.cancel()
+                self.source = nil
+                let waiters = exitWaiters
+                exitWaiters = []
+                DispatchQueue.main.async {
+                    onExit(status)
+                    waiters.forEach { $0() }
+                }
             }
         }
     }
 
-    private func drain(_ fd: Int32, _ onLine: @escaping (Data) -> Void) {
+    private func drain() {
         var chunk = [UInt8](repeating: 0, count: 65_536)
         while true {
-            let count = read(fd, &chunk, chunk.count)
+            let count = read(output, &chunk, chunk.count)
             if count > 0 { buffer.append(chunk, count: count); continue }
             if count < 0 && errno == EINTR { continue }
             break
@@ -239,7 +251,7 @@ final class ChildStream: @unchecked Sendable {
         while let end = buffer.firstIndex(of: 0x0A) {
             let line = buffer[buffer.startIndex..<end]
             buffer.removeSubrange(buffer.startIndex...end)
-            if !line.isEmpty { let copy = Data(line); DispatchQueue.main.async { onLine(copy) } }
+            if !line.isEmpty { let copy = Data(line); DispatchQueue.main.async { [onLine] in onLine(copy) } }
         }
         if buffer.count > 8_000_000 { buffer.removeAll() }  // a runaway line is dropped, not kept
     }
@@ -258,16 +270,21 @@ final class ChildStream: @unchecked Sendable {
         }
     }
 
-    /// SIGTERM to the group, SIGKILL a second later; the exit handler still runs.
-    func stop() {
+    /// Closes stdin, then SIGTERM to the group and SIGKILL a second later, each only while the
+    /// child is unreaped. `then` runs on the main queue once the whole group is gone.
+    func stop(then done: (() -> Void)? = nil) {
         queue.async { [self] in
+            if let done { if exited { DispatchQueue.main.async(execute: done) } else { exitWaiters.append(done) } }
             guard !stopped else { return }
             stopped = true
             close(input)
+            guard !exited else { return }
             kill(-pid, SIGTERM)
             queue.asyncAfter(deadline: .now() + 1) { [self] in if !exited { kill(-pid, SIGKILL) } }
         }
     }
 
-    deinit { if !stopped { close(input); if !exited { kill(-pid, SIGKILL) } } }
+    /// The reaper keeps this object alive until the child exits, so this only closes the
+    /// descriptor of a stream that was never stopped; it never signals.
+    deinit { if !stopped { close(input) } }
 }
