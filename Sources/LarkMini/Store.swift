@@ -129,7 +129,8 @@ final class Store: ObservableObject {
     @Published private var pageToken: String?
     private var loadedFirstPage = false
     private var fetchingChats = false
-    private var discovery = PreviewDiscovery()
+    /// The top of Lark's activity-sorted chat list at the last poll.
+    private var activityOrder: [String] = []
     private var olderTokens: [String: String] = [:]
     private var isDemo = false
 
@@ -222,11 +223,28 @@ final class Store: ObservableObject {
         if tickCount % 6 == 1 {
             await loadChats(reset: true, quiet: true)
         }
-        var ids = Set(pinned)
+        // New messages are found from the activity order of the chat list: one small list read,
+        // then previews only for the top chats and those that moved up (ADR 0010).
+        var ids = Set<String>()
+        var moved = Set<String>()
         if let openChat { ids.insert(openChat.id) }
-        let untracked = chats.map(\.id).filter { !ids.contains($0) }
-        ids.formUnion(discovery.next(untracked, limit: 3))
-        await refreshPreviews(Array(ids))
+        // The open panel shows the pins' unread state, so it keeps them at the poll interval;
+        // collapsed, the order alone finds new messages (Lark reorders within about 20 s).
+        if isExpanded { ids.formUnion(pinned) }
+        if let page = try? await api.listChats(pageSize: 20) {
+            let order = page.chats.map(\.id)
+            if activityOrder.isEmpty { ids.formUnion(pinned) }  // first read: settle the pins once
+            let change = ActivityOrder.changes(previous: activityOrder, current: order)
+            activityOrder = order
+            ids.formUnion(change.refresh)
+            moved = change.moved
+            let known = Set(chats.map(\.id))
+            let newcomers = page.chats.filter { !known.contains($0.id) }
+            if !newcomers.isEmpty { chats.insert(contentsOf: newcomers, at: 0) }
+        } else {
+            ids.formUnion(pinned)  // the list read failed: the pins are still checked
+        }
+        await refreshPreviews(Array(ids), moved: moved)
         if let chat = openChat {
             await refreshOpenChat(chat)
         }
@@ -274,7 +292,7 @@ final class Store: ObservableObject {
         messages = [:]
         pageToken = nil
         loadedFirstPage = false
-        discovery = PreviewDiscovery()
+        activityOrder = []
         memberNames = [:]
         me = nil
         auth = .signedOut
@@ -392,7 +410,9 @@ final class Store: ObservableObject {
     }
 
     /// Only what the panel actually shows: the pinned icons and the open chat.
-    private func refreshPreviews(_ ids: [String]) async {
+    /// `moved` chats rose in the activity order, so their newest message is new even without an
+    /// earlier preview or read marker.
+    private func refreshPreviews(_ ids: [String], moved: Set<String> = []) async {
         guard auth == .signedIn, !isDemo else { return }
         await withTaskGroup(of: (String, Preview?).self) { group in
             var iterator = ids.makeIterator()
@@ -414,8 +434,8 @@ final class Store: ObservableObject {
                     } else {
                         let previous = self.previews[result.0]
                         self.previews[result.0] = preview
-                        if self.lastSeen[result.0] == nil { self.setSeen(result.0, preview.messageId) }
-                        if previous != nil,
+                        if self.lastSeen[result.0] == nil { self.setSeen(result.0, moved.contains(result.0) ? "" : preview.messageId) }
+                        if previous != nil || moved.contains(result.0),
                            previous?.messageId != preview.messageId,
                            !preview.fromMe,
                            !self.isMuted(id: result.0),

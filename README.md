@@ -151,7 +151,9 @@ Every command prints one JSON object and exits non-zero on failure.
 
 ## Known limits
 
-- Reads trail the native client by a few seconds.
+- Reads trail the native client by a few seconds. With the panel collapsed, a
+  new message is found from the chat list's activity order, which Lark updates
+  up to about 20 seconds after the message.
 - The Control read depends on the Paseo desktop app's internal layout (0.14).
   A different version may fail visibly with "Paseo conversation data is
   unavailable"; Sift then falls back to reading every 15 seconds.

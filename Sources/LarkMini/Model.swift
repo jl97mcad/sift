@@ -327,15 +327,23 @@ enum UnreadPolicy {
     }
 }
 
-/// Sorted IDs keep every loaded chat in the rotation even when active-time order changes.
-struct PreviewDiscovery {
-    private var cursor = 0
-    mutating func next(_ ids: [String], limit: Int) -> [String] {
-        let ids = Array(Set(ids)).sorted()
-        guard !ids.isEmpty, limit > 0 else { return [] }
-        let count = min(limit, ids.count)
-        let result = (0..<count).map { ids[(cursor + $0) % ids.count] }
-        cursor = (cursor + count) % ids.count
-        return result
+/// Lark has no message push for user tokens, but its chat list sorts by activity: a new message
+/// moves its chat to the top. Comparing two reads of the top of that list names the chats with
+/// new activity. The top chats are always rechecked, since more activity there keeps the order.
+enum ActivityOrder {
+    /// `moved`: chats that overtook one that was above them, or entered the list above one.
+    /// Chats that only shift up because another left the list have overtaken nothing.
+    static func changes(previous: [String], current: [String], top: Int = 2) -> (refresh: [String], moved: Set<String>) {
+        let rank = Dictionary(previous.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+        var moved = Set<String>()
+        if !previous.isEmpty {
+            for (index, id) in current.enumerated() {
+                let before = rank[id] ?? Int.max
+                if current[(index + 1)...].contains(where: { (rank[$0] ?? Int.max) < before }) { moved.insert(id) }
+            }
+        }
+        var refresh: [String] = []
+        for id in Array(current.prefix(top)) + current.filter(moved.contains) where !refresh.contains(id) { refresh.append(id) }
+        return (refresh, moved)
     }
 }

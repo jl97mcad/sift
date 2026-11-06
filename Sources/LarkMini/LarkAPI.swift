@@ -228,7 +228,8 @@ actor LarkAPI {
         var query: [URLQueryItem] = [
             .init(name: "page_size", value: String(pageSize)),
             .init(name: "types", value: "p2p,group"),
-            .init(name: "sort", value: "active_time"),
+            // `sort=active_time` is silently ignored; this is the parameter Lark honours.
+            .init(name: "sort_type", value: "ByActiveTimeDesc"),
             .init(name: "user_id_type", value: "open_id")
         ]
         if let pageToken { query.append(.init(name: "page_token", value: pageToken)) }

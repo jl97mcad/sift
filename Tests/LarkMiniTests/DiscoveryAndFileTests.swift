@@ -2,18 +2,24 @@ import XCTest
 @testable import LarkMini
 
 final class DiscoveryAndFileTests: XCTestCase {
-    func testDiscoveryIsBoundedAndReachesHiddenChatsDespiteReordering() {
-        var discovery = PreviewDiscovery()
-        let ids = (1...11).map { "chat-\($0)" }
-        var found = Set<String>()
-        for tick in 0..<4 {
-            let batch = discovery.next(tick.isMultiple(of: 2) ? ids : ids.reversed(), limit: 3)
-            XCTAssertEqual(batch.count, 3)
-            found.formUnion(batch)
-        }
-        XCTAssertEqual(found, Set(ids))
-        XCTAssertEqual(discovery.next([], limit: 3), [])
-        XCTAssertEqual(discovery.next(["a", "a"], limit: 3), ["a"])
+    func testActivityOrderNamesOnlyChatsWithNewActivity() {
+        let before = ["a", "b", "c", "d", "e"]
+        // First read: no history, so only the top is checked.
+        XCTAssertEqual(ActivityOrder.changes(previous: [], current: before).refresh, ["a", "b"])
+        XCTAssertEqual(ActivityOrder.changes(previous: [], current: before).moved, [])
+        // Unchanged: the top two only (more activity at the top keeps the order).
+        XCTAssertEqual(ActivityOrder.changes(previous: before, current: before).refresh, ["a", "b"])
+        // d got a message and jumped to the top; the others only shifted down.
+        let jumped = ActivityOrder.changes(previous: before, current: ["d", "a", "b", "c", "e"])
+        XCTAssertEqual(jumped.moved, ["d"])
+        XCTAssertEqual(jumped.refresh, ["d", "a"])
+        // A chat from beyond the list arrived above the rest.
+        let arrived = ActivityOrder.changes(previous: before, current: ["x", "a", "b", "c", "d"])
+        XCTAssertEqual(arrived.moved, ["x"])
+        // b left the list: c, d, e shift up and f enters at the bottom, but nobody overtook anyone.
+        XCTAssertEqual(ActivityOrder.changes(previous: before, current: ["a", "c", "d", "e", "f"]).moved, [])
+        // c and e both had activity, e more recently.
+        XCTAssertEqual(ActivityOrder.changes(previous: before, current: ["e", "c", "a", "b", "d"]).moved, ["e", "c"])
     }
 
     func testResourceURLUsesMessageAuthenticationEndpointAndEscapesSegments() {
