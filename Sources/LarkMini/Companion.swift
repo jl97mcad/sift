@@ -97,17 +97,30 @@ struct CompanionNavigationPolicy: Equatable {
     }
 }
 
+extension Notification.Name {
+    static let companionStatusRequest = Notification.Name("com.jonathan.sift.companion-status-request")
+}
+
 enum CompanionSession {
-    static func hasSessionCookie(for baseURL: URL) -> Bool {
-        guard let host = baseURL.host?.lowercased() else { return false }
-        let semaphore = DispatchSemaphore(value: 0)
-        var found = false
+    static func sessionCookieExists(for baseURL: URL, completion: @escaping (Bool) -> Void) {
+        guard let host = baseURL.host?.lowercased() else {
+            completion(false)
+            return
+        }
         WKWebsiteDataStore.default().httpCookieStore.getAllCookies { cookies in
-            found = cookies.contains { cookie in
+            completion(cookies.contains { cookie in
                 let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
                 let matchesHost = host == domain || host.hasSuffix("." + domain)
                 return matchesHost && cookie.name.lowercased().contains("session")
-            }
+            })
+        }
+    }
+
+    static func hasSessionCookie(for baseURL: URL) -> Bool {
+        let semaphore = DispatchSemaphore(value: 0)
+        var found = false
+        sessionCookieExists(for: baseURL) { exists in
+            found = exists
             semaphore.signal()
         }
         guard semaphore.wait(timeout: .now() + 5) == .success else { return false }

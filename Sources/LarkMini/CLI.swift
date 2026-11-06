@@ -385,18 +385,71 @@ enum CLI {
     }
 
     private static func companionStatus(_ state: StateFile) -> Int32 {
-        var payload: [String: Any] = ["ok": true, "session_cookie": false]
+        var payload: [String: Any] = ["ok": true]
         guard let raw = state.current.companionURL else {
             payload["url"] = NSNull()
+            payload["session_cookie"] = NSNull()
+            payload["session_cookie_state"] = "unconfigured"
             return ok(payload)
         }
         payload["url"] = raw
-        if let base = CompanionConfig.validatedURL(raw) {
-            payload["session_cookie"] = CompanionSession.hasSessionCookie(for: base)
-        } else {
+        guard let base = CompanionConfig.validatedURL(raw) else {
             payload["valid"] = false
+            payload["session_cookie"] = NSNull()
+            payload["session_cookie_state"] = "unknown"
+            return ok(payload)
+        }
+        if let signedIn = companionSessionStatus(for: base) {
+            payload["session_cookie"] = signedIn
+            payload["session_cookie_state"] = "checked"
+        } else {
+            payload["session_cookie"] = NSNull()
+            payload["session_cookie_state"] = "unknown"
         }
         return ok(payload)
+    }
+
+    /// The CLI cannot read the app's live WebKit cookie store, so ask a running
+    /// Sift with the same support directory. nil means no app answered.
+    private static func companionSessionStatus(for base: URL) -> Bool? {
+        let request = UUID().uuidString
+        let prefix = "companion-status-\(request)-"
+        let directory = AppPaths.supportDirectory
+        let fileManager = FileManager.default
+        DistributedNotificationCenter.default().post(
+            name: .companionStatusRequest,
+            object: nil,
+            userInfo: [
+                "id": request,
+                "url": base.absoluteString,
+                "home": directory.path
+            ]
+        )
+        let deadline = Date().addingTimeInterval(1.5)
+        var sawResponse = false
+        var signedIn = false
+        while Date() < deadline {
+            if let files = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+                for file in files where file.lastPathComponent.hasPrefix(prefix) {
+                    sawResponse = true
+                    if let data = try? Data(contentsOf: file),
+                       let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let value = reply["session_cookie"] as? Bool {
+                        signedIn = signedIn || value
+                    }
+                    try? fileManager.removeItem(at: file)
+                }
+            }
+            if signedIn { break }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if let files = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+            for file in files where file.lastPathComponent.hasPrefix(prefix) {
+                try? fileManager.removeItem(at: file)
+            }
+        }
+        if signedIn { return true }
+        return sawResponse ? false : nil
     }
 
     private static func companionOpenURL(path: String) -> URL? {
