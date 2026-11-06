@@ -376,9 +376,14 @@ final class PaseoClient {
     /// Commands: `refresh`, `gap <seconds>`, `tail <entries>`. Callbacks run on the main queue.
     func watch(agentId: String, host: String?, tail: Int, onReading: @escaping (AgentReading) -> Void,
                onError: @escaping (String) -> Void, onExit: @escaping (Int32?) -> Void) throws -> ChildStream {
+        Self.sweepScripts()
         let (helper, arguments, script) = try Self.launch(agentId: agentId, host: host, tail: tail, watch: true)
+        var loaded = false
         do {
             return try ChildStream(helper, arguments, environment: Self.helperEnvironment, onLine: { line in
+                // Any output means Node has loaded the script, so the file can go now: a helper that
+                // outlives Sift (it exits when Sift's end of stdin closes) leaves nothing behind.
+                if !loaded { loaded = true; try? FileManager.default.removeItem(at: script) }
                 let text = String(decoding: line, as: UTF8.self)
                 if let reading = Self.reading(text) { onReading(reading) }
                 else if let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any], let error = json["error"] as? String {
@@ -391,6 +396,19 @@ final class PaseoClient {
         } catch {
             try? FileManager.default.removeItem(at: script)
             throw error
+        }
+    }
+
+    /// Removes reader scripts left by a run that never got to clean up (a quit before the first
+    /// reading, or an older build). No read lives an hour: one-shot reads time out in 30 s.
+    static func sweepScripts(in folder: URL = FileManager.default.temporaryDirectory, olderThan age: TimeInterval = 3_600) {
+        let files = FileManager.default
+        guard let names = try? files.contentsOfDirectory(atPath: folder.path) else { return }
+        for name in names where name.hasPrefix("sift-read-") && name.hasSuffix(".mjs") {
+            let url = folder.appendingPathComponent(name)
+            guard let modified = (try? files.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
+                  Date().timeIntervalSince(modified) > age else { continue }
+            try? files.removeItem(at: url)
         }
     }
 

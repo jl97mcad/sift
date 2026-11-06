@@ -94,4 +94,18 @@ final class ChildProcessTests: XCTestCase {
             XCTFail("supervision is refused while children are reaped automatically")
         } catch let error as ChildProcess.LaunchError { XCTAssertEqual(error.code, ECHILD) }
     }
+
+    func testStaleReaderScriptsAreSweptAndFreshOnesKept() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let stale = folder.appendingPathComponent("sift-read-old.mjs"), fresh = folder.appendingPathComponent("sift-read-new.mjs")
+        let other = folder.appendingPathComponent("other.mjs")
+        for file in [stale, fresh, other] { try Data("x".utf8).write(to: file) }
+        for file in [stale, other] {
+            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-7_200)], ofItemAtPath: file.path)
+        }
+        PaseoClient.sweepScripts(in: folder)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted(), ["other.mjs", "sift-read-new.mjs"])
+    }
 }
