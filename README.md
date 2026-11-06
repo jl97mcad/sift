@@ -140,9 +140,10 @@ Every command prints one JSON object and exits non-zero on failure.
 
 ## How it works
 
-- Lark has no push channel for personal messages, so Sift polls: pinned chats
-  every few seconds, the chat list about every 30 seconds, and the open chat
-  every tick. The interval is configurable.
+- Lark has no push channel for personal messages, so Sift polls. Each tick
+  reads the 20 most active chats once and fetches previews only for the top
+  two and for chats that moved up; the open chat is read every tick, and pinned
+  chats too while the panel is open. The interval is configurable.
 - The API has no unread counter. Sift remembers the last message it showed per
   chat and marks newer messages from other people as unread.
 - Direct chats list no picture and the contact profile endpoint may refuse a
