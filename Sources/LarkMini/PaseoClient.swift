@@ -282,13 +282,10 @@ final class PaseoClient {
 
     private func run(_ arguments: [String], host: String? = nil, timeout: TimeInterval = 30, executablePath: String? = nil) async throws -> String {
         guard let executable = executablePath ?? PaseoClient.locate() else { throw PaseoError.notInstalled }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
         var args = arguments
         if let host, !host.isEmpty {
             args = ["--host", host] + args
         }
-        process.arguments = args
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:\(home)/.local/bin"
@@ -296,26 +293,7 @@ final class PaseoClient {
             environment["ELECTRON_RUN_AS_NODE"] = "1"
             environment["PASEO_NODE_ENV"] = "production"
         }
-        process.environment = environment
-        process.standardInput = FileHandle.nullDevice
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        let output = ProcessOutput()
-        pipe.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            if chunk.isEmpty { handle.readabilityHandler = nil; output.reachedEnd() } else { output.append(chunk) }
-        }
-        process.terminationHandler = { finished in output.exited(finished.terminationStatus) }
-
-        try process.run()
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak process] in
-            if process?.isRunning == true { process?.terminate() }
-            output.giveUp(after: 2)
-        }
-        let (data, status) = await withCheckedContinuation { output.wait($0) }
-        pipe.fileHandleForReading.readabilityHandler = nil
-
+        let (data, status) = try await ChildProcess.run(executable, args, environment: environment, timeout: timeout)
         guard let status else { throw PaseoError.failed("Paseo did not answer in time.") }
         guard status == 0 else {
             let message = String(data: data, encoding: .utf8)?
@@ -323,51 +301,5 @@ final class PaseoClient {
             throw PaseoError.failed(message.isEmpty ? "paseo exited \(status)" : message)
         }
         return String(data: data, encoding: .utf8) ?? ""
-    }
-}
-
-/// Collects a child process's output and finishes exactly once: at exit plus end of output,
-/// shortly after exit if a lingering grandchild keeps the pipe open, or at the deadline.
-/// (Waiting with `waitUntilExit` once hung a refresh forever after the child had gone.)
-final class ProcessOutput: @unchecked Sendable {
-    private let lock = NSLock()
-    private var data = Data()
-    private var status: Int32?
-    private var ended = false
-    private var result: (Data, Int32?)?
-    private var waiter: CheckedContinuation<(Data, Int32?), Never>?
-
-    func append(_ chunk: Data) { lock.lock(); data.append(chunk); lock.unlock() }
-
-    func reachedEnd() {
-        lock.lock(); ended = true; let ready = status != nil; lock.unlock()
-        if ready { finish() }
-    }
-
-    func exited(_ code: Int32) {
-        lock.lock(); status = code; let ready = ended; lock.unlock()
-        if ready { finish() } else { giveUp(after: 1) }
-    }
-
-    func giveUp(after seconds: Double) {
-        DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { self.finish() }
-    }
-
-    func wait(_ continuation: CheckedContinuation<(Data, Int32?), Never>) {
-        lock.lock()
-        if let result { lock.unlock(); continuation.resume(returning: result); return }
-        waiter = continuation
-        lock.unlock()
-    }
-
-    private func finish() {
-        lock.lock()
-        guard result == nil else { lock.unlock(); return }
-        let done = (data, status)
-        result = done
-        let waiting = waiter
-        waiter = nil
-        lock.unlock()
-        waiting?.resume(returning: done)
     }
 }
