@@ -7,11 +7,12 @@ struct AppState: Codable, Equatable {
     var settings = Settings()
     var control: ControlSeat?
     var muted: [String: Date] = [:]
+    var companionURL: String?
 
     init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case pinned, lastSeen, meOpenId, settings, control, muted
+        case pinned, lastSeen, meOpenId, settings, control, muted, companionURL
     }
 
     /// Old files must not fail to decode when a field is added, or every
@@ -24,6 +25,7 @@ struct AppState: Codable, Equatable {
         settings = try container.decodeIfPresent(Settings.self, forKey: .settings) ?? Settings()
         control = try container.decodeIfPresent(ControlSeat.self, forKey: .control)
         muted = try container.decodeIfPresent([String: Date].self, forKey: .muted) ?? [:]
+        companionURL = try container.decodeIfPresent(String.self, forKey: .companionURL)
     }
 }
 

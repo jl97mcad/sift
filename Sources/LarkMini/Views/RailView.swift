@@ -20,6 +20,18 @@ struct RailView: View {
             .accessibilityLabel("Sift Inbox")
             .padding(.top, 10)
 
+            Button { store.openCompanion() } label: {
+                VStack(spacing: 4) {
+                    CompanionMark(size: 28)
+                    Text("Companion").font(.system(size: 11, weight: .medium))
+                        .lineLimit(1).minimumScaleFactor(0.75)
+                }
+                .frame(width: 48, height: 54)
+            }
+            .buttonStyle(.plain)
+            .help("Open Companion")
+            .accessibilityLabel("Open Companion")
+
             if store.controlSeat != nil {
                 Button { store.openControl() } label: {
                     VStack(spacing: 4) {

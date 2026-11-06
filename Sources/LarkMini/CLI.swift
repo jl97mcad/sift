@@ -1,9 +1,13 @@
 import AppKit
+import CoreServices
 import Foundation
 
 /// Small command surface so an agent can configure Sift without touching the UI.
 enum CLI {
     static func run(arguments: [String]) {
+        if arguments.first == "companion" {
+            exit(companion(Array(arguments.dropFirst())))
+        }
         let semaphore = DispatchSemaphore(value: 0)
         var status: Int32 = 0
         Task.detached {
@@ -340,6 +344,123 @@ enum CLI {
         return payload
     }
 
+    private static func companion(_ args: [String]) -> Int32 {
+        let state = StateFile.shared
+        guard let sub = args.first else {
+            return companionStatus(state)
+        }
+        switch sub {
+        case "status":
+            return companionStatus(state)
+        case "set":
+            let flags = Flags(args)
+            guard let raw = flags.value("--url") else {
+                return fail("companion set needs --url <http(s)://host[:port]>")
+            }
+            guard let url = CompanionConfig.validatedURL(raw) else {
+                return fail("Companion URL must be an absolute http or https URL")
+            }
+            state.update { $0.companionURL = url.absoluteString }
+            return ok(["ok": true, "url": url.absoluteString])
+        case "open":
+            guard let raw = state.current.companionURL,
+                  let base = CompanionConfig.validatedURL(raw) else {
+                return fail("No Companion URL configured. Run sift companion set --url http://host:port")
+            }
+            let path = CompanionPath.accepted(Flags(args).value("--path"))
+            guard let target = CompanionConfig.targetURL(base: base, path: path) else {
+                return fail("Could not build the Companion URL")
+            }
+            guard let openURL = companionOpenURL(path: path) else {
+                return fail("Could not build the Companion window URL")
+            }
+            LSRegisterURL(Bundle.main.bundleURL as CFURL, true)
+            guard NSWorkspace.shared.open(openURL) else {
+                return fail("Could not open the Companion window")
+            }
+            return ok(["ok": true, "url": target.absoluteString, "path": path])
+        default:
+            return fail("Unknown companion command '\(sub)'")
+        }
+    }
+
+    private static func companionStatus(_ state: StateFile) -> Int32 {
+        var payload: [String: Any] = ["ok": true]
+        guard let raw = state.current.companionURL else {
+            payload["url"] = NSNull()
+            payload["session_cookie"] = NSNull()
+            payload["session_cookie_state"] = "unconfigured"
+            return ok(payload)
+        }
+        payload["url"] = raw
+        guard let base = CompanionConfig.validatedURL(raw) else {
+            payload["valid"] = false
+            payload["session_cookie"] = NSNull()
+            payload["session_cookie_state"] = "unknown"
+            return ok(payload)
+        }
+        if let signedIn = companionSessionStatus(for: base) {
+            payload["session_cookie"] = signedIn
+            payload["session_cookie_state"] = "checked"
+        } else {
+            payload["session_cookie"] = NSNull()
+            payload["session_cookie_state"] = "unknown"
+        }
+        return ok(payload)
+    }
+
+    /// The CLI cannot read the app's live WebKit cookie store, so ask a running
+    /// Sift with the same support directory. nil means no app answered.
+    private static func companionSessionStatus(for base: URL) -> Bool? {
+        let request = UUID().uuidString
+        let prefix = "companion-status-\(request)-"
+        let directory = AppPaths.supportDirectory
+        let fileManager = FileManager.default
+        DistributedNotificationCenter.default().post(
+            name: .companionStatusRequest,
+            object: nil,
+            userInfo: [
+                "id": request,
+                "url": base.absoluteString,
+                "home": directory.path
+            ]
+        )
+        let deadline = Date().addingTimeInterval(1.5)
+        var sawResponse = false
+        var signedIn = false
+        while Date() < deadline {
+            if let files = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+                for file in files where file.lastPathComponent.hasPrefix(prefix) {
+                    sawResponse = true
+                    if let data = try? Data(contentsOf: file),
+                       let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let value = reply["session_cookie"] as? Bool {
+                        signedIn = signedIn || value
+                    }
+                    try? fileManager.removeItem(at: file)
+                }
+            }
+            if signedIn { break }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if let files = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) {
+            for file in files where file.lastPathComponent.hasPrefix(prefix) {
+                try? fileManager.removeItem(at: file)
+            }
+        }
+        if signedIn { return true }
+        return sawResponse ? false : nil
+    }
+
+    private static func companionOpenURL(path: String) -> URL? {
+        var components = URLComponents()
+        components.scheme = "sift"
+        components.host = "companion"
+        components.path = "/open"
+        components.queryItems = [URLQueryItem(name: "path", value: path)]
+        return components.url
+    }
+
     private static func doctor(_ args: [String]) async throws -> Int32 {
         let store = TokenStore()
         var checks: [[String: Any]] = []
@@ -460,6 +581,9 @@ enum CLI {
       control   Optional Paseo seat pinned above your chats
                   set --agent-id ID [--host H] [--provider paseo] [--title T]
                   status | send "text" | logs [--tail N] | digest | asks | off
+      companion Open the real Companion web app in its own Sift window
+                  set --url http://host:port
+                  status | open [--path /companion/app/...]
       doctor    Check credentials, token and chat access
       open      Open the Sift app
       logout    Forget the current session

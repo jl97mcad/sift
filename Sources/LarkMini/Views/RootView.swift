@@ -112,7 +112,7 @@ struct ExpandedView: View {
 
     var body: some View {
         Group {
-            if isSignedIn || store.controlSeat != nil {
+            if isSignedIn || store.controlSeat != nil || store.companionConfigured {
                 ShellView()
             } else if store.showingSettings {
                 SettingsView()

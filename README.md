@@ -24,6 +24,9 @@ automate the Lark desktop client.
   bundles and system events. Replies quote their parent; edits, recalls,
   threads and bots are marked. Messages from one sender in the same minute
   group together.
+- **Companion (optional).** Opens the real Companion web app in its own
+  resizable window with a persistent session, configured with
+  `sift companion set --url http://host:port`.
 - **Control seat (optional).** Talk to a Paseo agent session from the panel:
   readable replies with Markdown, named speakers, a live activity row, the
   work between replies (commands, edits, checklists, failures) folded into
@@ -126,6 +129,7 @@ Every command prints one JSON object and exits non-zero on failure.
 | `sift messages --chat-id ID [--limit N]` | one chat's history |
 | `sift pins list \| add <chat_id> \| add --name "Room" \| remove <chat_id> \| clear` | pinned chats |
 | `sift control set \| status \| send "text" \| logs [--tail N] \| digest \| asks \| off` | Control seat |
+| `sift companion set --url URL \| status \| open [--path PATH]` | Companion window |
 | `sift selftest` / `sift open` / `sift logout` | geometry self-test; open the app; forget the session |
 
 ## Privacy and data

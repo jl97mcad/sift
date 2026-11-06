@@ -12,6 +12,7 @@ final class Store: ObservableObject {
     @Published private(set) var lastSeen: [String: String] = [:]
     @Published private(set) var messages: [String: [ChatMessage]] = [:]
     @Published private(set) var auth: AuthState = .unknown
+    @Published private(set) var companionURL: String?
     @Published private(set) var me: Me?
     @Published var openChat: Chat?
     @Published var isExpanded = true {
@@ -149,6 +150,7 @@ final class Store: ObservableObject {
         lastSeen = state.lastSeen
         adoptSeat(state.control)
         muted = state.muted
+        companionURL = state.companionURL
         let saved = DraftFile.load()
         drafts = saved.chats
         controlDraft = saved.control
@@ -186,6 +188,7 @@ final class Store: ObservableObject {
         if state.control != controlSeat {
             adoptSeat(state.control)
             if state.control == nil { controlOpen = false } }
+        if state.companionURL != companionURL { companionURL = state.companionURL }
         if tokens.tokens != nil, auth == .signedOut { auth = .signedIn }
         if tokens.tokens == nil, auth == .signedIn { auth = .signedOut }
     }
@@ -973,6 +976,22 @@ final class Store: ObservableObject {
 
     func closeControl() {
         controlOpen = false
+    }
+
+    var companionConfigured: Bool {
+        companionURL.flatMap(CompanionConfig.validatedURL) != nil
+    }
+
+    func openCompanion(path: String? = nil) {
+        let state = stateFile.reload()
+        companionURL = state.companionURL
+        guard let raw = state.companionURL,
+              let base = CompanionConfig.validatedURL(raw) else {
+            errorText = "Set a Companion URL with: sift companion set --url http://host:port"
+            return
+        }
+        errorText = nil
+        CompanionWindowController.shared.open(baseURL: base, path: path)
     }
 
     var canLoadEarlierControl: Bool { controlHasOlder && controlTail < Self.controlMaxTail }
