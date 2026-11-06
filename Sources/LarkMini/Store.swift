@@ -51,6 +51,8 @@ final class Store: ObservableObject {
     @Published var memberNames: [String: String] = [:]
     @Published private(set) var chatLinks = ChatLinks(chats: [])
     private var directory: [Chat] = []
+    let companion = CompanionStore(client: MockCompanionAPIClient())
+    @Published var companionOpen = false
     @Published var controlSeat: ControlSeat?
     @Published var controlMessages: [AgentMessage] = []
     @Published private(set) var controlTimeline: [ControlEntry] = []
@@ -601,6 +603,7 @@ final class Store: ObservableObject {
         showingSettings = false
         openChat = nil
         controlOpen = false
+        companionOpen = false
     }
 
     func closeSearch() {
@@ -701,6 +704,7 @@ final class Store: ObservableObject {
     func open(_ chat: Chat) {
         showingSettings = false
         controlOpen = false
+        companionOpen = false
         if searchOpen { closeSearch() }
         openChat = chat
         if !chat.isP2P { Task { await resolveMembers(chat) } }
@@ -715,6 +719,7 @@ final class Store: ObservableObject {
     func showInbox() {
         showingSettings = false
         controlOpen = false
+        companionOpen = false
         openChat = nil
         showAllChats = false
         if searchOpen { closeSearch() }
@@ -965,6 +970,7 @@ final class Store: ObservableObject {
     func openControl() {
         if searchOpen { closeSearch() }
         controlOpen = true
+        companionOpen = false
         showingSettings = false
         openChat = nil
         markControlRead()
@@ -973,6 +979,19 @@ final class Store: ObservableObject {
 
     func closeControl() {
         controlOpen = false
+    }
+
+    func openCompanion() {
+        if searchOpen { closeSearch() }
+        companionOpen = true
+        controlOpen = false
+        showingSettings = false
+        openChat = nil
+        Task { await companion.load() }
+    }
+
+    func closeCompanion() {
+        companionOpen = false
     }
 
     var canLoadEarlierControl: Bool { controlHasOlder && controlTail < Self.controlMaxTail }

@@ -18,6 +18,8 @@ struct ShellView: View {
             SettingsView()
         } else if store.controlOpen {
             ControlChatView()
+        } else if store.companionOpen {
+            CompanionView(companion: store.companion)
         } else if let chat = store.openChat {
             ConversationView(chat: chat)
         } else if store.auth != .signedIn {

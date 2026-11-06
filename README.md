@@ -179,5 +179,5 @@ make dmg                 # dist/Sift.dmg
 ```
 
 `open dist/Sift.app --args --demo` accepts `--demo-chat`, `--demo-control`,
-`--demo-needs-you` and `--demo-search`. Design decisions are recorded in
-[docs/decisions](docs/decisions).
+`--demo-companion`, `--demo-needs-you` and `--demo-search`. Design decisions are
+recorded in [docs/decisions](docs/decisions).
