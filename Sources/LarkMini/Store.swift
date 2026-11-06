@@ -870,6 +870,23 @@ final class Store: ObservableObject {
         UserDefaults.standard.set(Array(seenAsks), forKey: "seenAsks")
     }
 
+    /// Seen and bubbled needs only ever name what is open now, so a closed request can
+    /// never suppress a later one with the same id. Unknown asks change nothing.
+    private func reconcileNeeds(permissions: Set<String>, asks reading: AskReading) {
+        let keptPermissions = seenPermissions.intersection(permissions)
+        if keptPermissions != seenPermissions {
+            seenPermissions = keptPermissions
+            UserDefaults.standard.set(Array(keptPermissions), forKey: "seenPermissions")
+        }
+        guard case .available(let open) = reading else { return }
+        let openAsks = Set(open.map(\.id))
+        if !seenAsks.isSubset(of: openAsks) {
+            seenAsks.formIntersection(openAsks)
+            UserDefaults.standard.set(Array(seenAsks), forKey: "seenAsks")
+        }
+        bubbledNeeds.formIntersection(Set(permissions.map { "permission-\($0)" } + openAsks.map { "ask-\($0)" }))
+    }
+
     // MARK: - Edge bubble
 
     /// A new Lark message while collapsed: one soft bubble, bursts coalesce.
@@ -939,6 +956,7 @@ final class Store: ObservableObject {
             controlNeedsInput = reading.needsInput
             asks = reading.asks
             controlPermissions = reading.permissions
+            reconcileNeeds(permissions: Set(reading.permissions.map(\.id)), asks: reading.asks)
             for permission in reading.permissions where !seenPermissions.contains(permission.id) {
                 needArrival(id: "permission-\(permission.id)",
                             text: permission.title.isEmpty ? "Waiting for your permission in Paseo" : permission.title)

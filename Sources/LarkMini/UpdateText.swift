@@ -29,14 +29,25 @@ struct ReplyBlock: Equatable {
     var marker: String? = nil
 
     private final class Box<Value> { let value: Value; init(_ value: Value) { self.value = value } }
-    private static let blocks = NSCache<NSString, Box<[ReplyBlock]>>()
-    private static let inlines = NSCache<NSString, Box<AttributedString>>()
+    // Bounded: about 500 replies and 2 MB of their text, then least-recent entries go.
+    private static let blocks: NSCache<NSString, Box<[ReplyBlock]>> = {
+        let cache = NSCache<NSString, Box<[ReplyBlock]>>()
+        cache.countLimit = 500
+        cache.totalCostLimit = 2_000_000
+        return cache
+    }()
+    private static let inlines: NSCache<NSString, Box<AttributedString>> = {
+        let cache = NSCache<NSString, Box<AttributedString>>()
+        cache.countLimit = 2_000
+        cache.totalCostLimit = 2_000_000
+        return cache
+    }()
 
     /// Parsed blocks keyed by content, so redraws do not re-parse unchanged replies.
     static func cached(_ text: String) -> [ReplyBlock] {
         if let hit = blocks.object(forKey: text as NSString) { return hit.value }
         let parsed = parse(text)
-        blocks.setObject(Box(parsed), forKey: text as NSString)
+        blocks.setObject(Box(parsed), forKey: text as NSString, cost: text.utf8.count)
         return parsed
     }
 
@@ -45,7 +56,7 @@ struct ReplyBlock: Equatable {
         if let hit = inlines.object(forKey: text as NSString) { return hit.value }
         let parsed = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(text)
-        inlines.setObject(Box(parsed), forKey: text as NSString)
+        inlines.setObject(Box(parsed), forKey: text as NSString, cost: text.utf8.count)
         return parsed
     }
 
