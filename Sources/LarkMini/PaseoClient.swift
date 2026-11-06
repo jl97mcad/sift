@@ -293,8 +293,13 @@ final class PaseoClient {
             environment["ELECTRON_RUN_AS_NODE"] = "1"
             environment["PASEO_NODE_ENV"] = "production"
         }
-        let (data, status) = try await ChildProcess.run(executable, args, environment: environment, timeout: timeout)
-        guard let status else { throw PaseoError.failed("Paseo did not answer in time.") }
+        let (data, exit) = try await ChildProcess.run(executable, args, environment: environment, timeout: timeout)
+        let status: Int32
+        switch exit {
+        case .timedOut: throw PaseoError.failed("Paseo did not answer in time.")
+        case .unobserved: throw PaseoError.failed("Paseo's exit could not be read. Refresh to retry.")
+        case .code(let code): status = code
+        }
         guard status == 0 else {
             let message = String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

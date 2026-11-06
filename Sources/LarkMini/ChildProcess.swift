@@ -12,9 +12,19 @@ enum ChildProcess {
         var errorDescription: String? { "Could not start Paseo (\(String(cString: strerror(code))))." }
     }
 
-    /// Exit status, or nil when the deadline ended the run.
+    enum Exit: Equatable {
+        case code(Int32)
+        /// The deadline ended the run.
+        case timedOut
+        /// The exit could not be observed (the child was not waitable); no status is invented.
+        case unobserved
+    }
+
     static func run(_ path: String, _ arguments: [String], environment: [String: String],
-                    timeout: TimeInterval, grace: TimeInterval = 1) async throws -> (Data, Int32?) {
+                    timeout: TimeInterval, grace: TimeInterval = 1) async throws -> (Data, Exit) {
+        // With SIGCHLD ignored the system reaps children itself, so a pid (and group id) could be
+        // reused before Sift sees the exit; supervising by group would then be unsafe.
+        guard childrenAreWaitable() else { throw LaunchError(code: ECHILD) }
         var fds: [Int32] = [-1, -1]
         guard pipe(&fds) == 0 else { throw LaunchError(code: errno) }
         let (readEnd, writeEnd) = (fds[0], fds[1])
@@ -55,19 +65,36 @@ enum ChildProcess {
         }
     }
 
-    /// Blocks until the child exits without reaping it: the zombie keeps its pid and group id taken.
-    static func awaitExit(_ pid: pid_t) {
-        var info = siginfo_t()
-        while waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT) == -1 && errno == EINTR {}
+    static func childrenAreWaitable() -> Bool {
+        var action = sigaction()
+        guard sigaction(SIGCHLD, nil, &action) == 0 else { return false }
+        let ignored = unsafeBitCast(action.__sigaction_u.__sa_handler, to: Int.self) == 1  // SIG_IGN
+        return !ignored && action.sa_flags & SA_NOCLDWAIT == 0
     }
 
-    /// After `awaitExit`: kills what is left of the group, then reaps and returns the status.
-    /// Call it on the queue that sends the group's signals; after it, no signal may follow.
-    static func reap(_ pid: pid_t) -> Int32 {
+    /// Blocks until the child exits, without reaping it. True only when waitid confirmed this
+    /// child's exit and its zombie still holds the pid and group id; false for any error, after
+    /// which nothing may signal the group or reap the pid.
+    static func awaitExit(_ pid: pid_t) -> Bool {
+        var info = siginfo_t()
+        while true {
+            if waitid(P_PID, id_t(pid), &info, WEXITED | WNOWAIT) == 0 { return info.si_pid == pid }
+            if errno != EINTR { return false }
+        }
+    }
+
+    /// Only after `awaitExit` returned true: kills what is left of the group, then reaps.
+    /// Returns the status, or nil if waitpid failed. Call it on the queue that sends the
+    /// group's signals; after it, no signal may follow.
+    static func reap(_ pid: pid_t) -> Int32? {
         kill(-pid, SIGKILL)
         var raw: Int32 = 0
-        while waitpid(pid, &raw, 0) == -1 && errno == EINTR {}
-        return (raw & 0x7f) == 0 ? (raw >> 8) & 0xff : 128 + (raw & 0x7f)
+        while true {
+            let result = waitpid(pid, &raw, 0)
+            if result == pid { return (raw & 0x7f) == 0 ? (raw >> 8) & 0xff : 128 + (raw & 0x7f) }
+            if result == -1 && errno == EINTR { continue }
+            return nil
+        }
     }
 
     private final class Run {
@@ -76,15 +103,17 @@ enum ChildProcess {
         let timeout: TimeInterval
         let grace: TimeInterval
         let queue = DispatchQueue(label: "sift.child")
-        var continuation: CheckedContinuation<(Data, Int32?), Never>?
+        var continuation: CheckedContinuation<(Data, Exit), Never>?
         var source: DispatchSourceRead?
         var data = Data()
+        /// Set when the exit is known or cannot be known; no signal is sent after that.
+        var gone = false
         var status: Int32?
         var ended = false
         var timedOut = false
 
         init(pid: pid_t, fd: Int32, timeout: TimeInterval, grace: TimeInterval,
-             continuation: CheckedContinuation<(Data, Int32?), Never>) {
+             continuation: CheckedContinuation<(Data, Exit), Never>) {
             (self.pid, self.fd, self.timeout, self.grace, self.continuation) = (pid, fd, timeout, grace, continuation)
         }
 
@@ -95,21 +124,22 @@ enum ChildProcess {
             self.source = source
             source.resume()
             DispatchQueue.global().async { [self] in
-                ChildProcess.awaitExit(pid)
+                let waitable = ChildProcess.awaitExit(pid)
                 // Reaped on the queue that sends signals, so no signal can follow the reap.
                 queue.async { [self] in
-                    status = ChildProcess.reap(pid)
+                    gone = true
+                    status = waitable ? ChildProcess.reap(pid) : nil
                     finishIfDone()
                     // A descendant that left the group can hold the pipe open; stop waiting for it.
                     queue.asyncAfter(deadline: .now() + grace) { [self] in finish() }
                 }
             }
             queue.asyncAfter(deadline: .now() + timeout) { [self] in
-                guard continuation != nil, status == nil else { return }
+                guard continuation != nil, !gone else { return }
                 timedOut = true
                 kill(-pid, SIGTERM)
                 queue.asyncAfter(deadline: .now() + grace) { [self] in
-                    guard continuation != nil, status == nil else { return }
+                    guard continuation != nil, !gone else { return }
                     kill(-pid, SIGKILL)
                     queue.asyncAfter(deadline: .now() + grace) { [self] in finish() }
                 }
@@ -130,7 +160,7 @@ enum ChildProcess {
         }
 
         private func finishIfDone() {
-            if ended && status != nil { finish() }
+            if ended && gone { finish() }
         }
 
         private func finish() {
@@ -138,7 +168,7 @@ enum ChildProcess {
             continuation = nil
             if !ended { drain() }  // take what is already in the pipe
             source?.cancel()
-            waiting.resume(returning: (data, timedOut ? nil : status))
+            waiting.resume(returning: (data, timedOut ? .timedOut : status.map(Exit.code) ?? .unobserved))
         }
     }
 }
