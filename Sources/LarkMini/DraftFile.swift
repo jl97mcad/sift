@@ -47,7 +47,10 @@ struct DraftFile: Codable, Equatable {
             unlink(staged.path)
             throw POSIXError(POSIXErrorCode(rawValue: failure) ?? .EIO)
         }
+        // The rename is durable only once the folder is synced; a failure is reported, not ignored.
         let directory = open(folder.path, O_RDONLY | O_CLOEXEC)
-        if directory >= 0 { fsync(directory); close(directory) }
+        guard directory >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { close(directory) }
+        guard fsync(directory) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
     }
 }
