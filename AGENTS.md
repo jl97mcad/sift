@@ -15,11 +15,15 @@ sift login --device-code CODE              # after the person approves
 sift doctor
 sift chats --limit 5
 sift pins add --name "Design Room"
-sift control set --agent-id ID --host tcp://host:6767
+sift agents add --agent-id ID --host tcp://host:6767 --name "Finance" --color pink
+sift control set --agent-id ID --host tcp://host:6767   # the seat named Control
 ```
 
 Every command prints one JSON object on stdout and exits non-zero on failure.
 Check `ok` in the JSON, not the exit code alone.
+
+Seats are agents first: each configured Paseo session gets its own face in
+the rail before the Inbox. `sift agents list` shows them.
 
 ## What needs the person
 

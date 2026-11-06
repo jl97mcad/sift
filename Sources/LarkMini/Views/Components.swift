@@ -185,25 +185,6 @@ enum BrandIcon {
     }
 }
 
-/// An agent mark, shared by the rail and conversation heading.
-struct ControlMark: View {
-    var size: CGFloat = 28
-    var running: Bool = false
-
-    var body: some View {
-        Image(systemName: "command")
-            .font(.system(size: size * 0.58, weight: .medium))
-            .foregroundStyle(SiftStyle.green)
-            .frame(width: size, height: size)
-            .overlay(alignment: .bottomTrailing) {
-                if running {
-                    Circle().fill(SiftStyle.green).frame(width: 6, height: 6)
-                }
-            }
-            .accessibilityHidden(true)
-    }
-}
-
 struct PaneHeader<Trailing: View>: View {
     let title: String
     let subtitle: String

@@ -91,8 +91,8 @@ struct CollapsedBubble: View {
                 .scaleEffect(reduceMotion ? 1 : 1 + 0.05 * gaze.proximity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-        .help(store.attentionSummary.map { "Control · " + $0 + " · Click to open" } ?? "Open Sift (⌥Space)")
-        .accessibilityLabel("Open Sift, \(store.unreadCount) unread chats" + (store.attentionSummary.map { ", Control " + $0 } ?? ""))
+        .help(store.attentionSummary.map { $0 + " · Click to open" } ?? "Open Sift (⌥Space)")
+        .accessibilityLabel("Open Sift, \(store.unreadCount) unread chats" + (store.attentionSummary.map { ", " + $0 } ?? ""))
     }
 }
 
@@ -112,7 +112,7 @@ struct ExpandedView: View {
 
     var body: some View {
         Group {
-            if isSignedIn || store.controlSeat != nil {
+            if isSignedIn || !store.seats.isEmpty {
                 ShellView()
             } else if store.showingSettings {
                 SettingsView()

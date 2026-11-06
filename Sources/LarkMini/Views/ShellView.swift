@@ -16,8 +16,8 @@ struct ShellView: View {
     private var content: some View {
         if store.showingSettings {
             SettingsView()
-        } else if store.controlOpen {
-            ControlChatView()
+        } else if store.controlOpen, let seat = store.seat {
+            ControlChatView(seat: seat)
         } else if let chat = store.openChat {
             ConversationView(chat: chat)
         } else if store.auth != .signedIn {

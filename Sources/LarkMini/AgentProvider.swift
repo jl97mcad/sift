@@ -49,8 +49,10 @@ extension ControlSeat {
         var moved = self
         moved.agentId = next.id
         moved.title = next.name
-        let saved = state.update { if $0.control == self { $0.control = moved } }
-        return saved.control == moved ? moved : nil
+        let saved = state.update { state in
+            if let index = state.seats.firstIndex(where: { $0 == self }) { state.seats[index] = moved }
+        }
+        return saved.seats.contains(moved) ? moved : nil
     }
 }
 

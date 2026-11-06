@@ -11,6 +11,8 @@ struct SettingsView: View {
     @State private var savedNote: String?
     @State private var controlAgentId = ""
     @State private var controlHost = ""
+    @State private var controlName = ""
+    @State private var controlColor = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -237,55 +239,39 @@ struct SettingsView: View {
     }
 
     private var controlSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("Control seat")
-            Text(store.paseoAvailable ? "Paseo installed" : "Paseo CLI unavailable · check the Paseo app installation.")
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("Agents")
+            Text(store.paseoAvailable ? "Paseo installed · each agent follows its own handoffs" : "Paseo CLI unavailable · check the Paseo app installation.")
                 .font(.system(size: 11))
                 .foregroundStyle(SiftStyle.secondary)
-            if let seat = store.controlSeat {
-                HStack(spacing: 6) {
-                    Text(seat.title).font(.system(size: 11, weight: .medium))
-                    Spacer()
-                    Button("Remove") { store.disableControl() }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.red)
-                }
-                Text("Connection: " + store.controlStatus + (store.controlNeedsInput ? " · waiting for your permission" : ""))
-                    .font(.system(size: 11)).foregroundStyle(SiftStyle.secondary)
-                Text("Asks: " + store.asksSummary)
-                    .font(.system(size: 11)).foregroundStyle(SiftStyle.secondary)
-                Text("Host: " + (seat.host.flatMap { $0.isEmpty ? nil : $0 } ?? "This Mac"))
-                    .font(.system(size: 11)).foregroundStyle(SiftStyle.secondary).textSelection(.enabled)
-                DisclosureGroup("Session details") {
-                    Text("Provider: " + seat.provider).font(.system(size: 11))
-                    Text(seat.agentId).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
-                }.font(.system(size: 11)).foregroundStyle(SiftStyle.secondary)
-            } else {
-                Text("Agent or session ID").font(.system(size: 12))
-                TextField("Paseo agent or session id", text: $controlAgentId)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 11, design: .monospaced))
-                    .padding(10)
-                    .background(fieldBackground)
-                Text("Host · leave blank for this Mac").font(.system(size: 12))
-                TextField("Host (blank for this Mac)", text: $controlHost)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 11, design: .monospaced))
-                    .padding(10)
-                    .background(fieldBackground)
-                Button("Add Control seat") {
-                    Task {
-                        await store.setControlSeat(agentId: controlAgentId,
-                                                   host: controlHost.isEmpty ? nil : controlHost)
-                    }
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(accent)
-                .disabled(controlAgentId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            ForEach(store.seats) { seat in
+                SeatSettingsRow(seat: seat)
             }
+            Text(store.seats.isEmpty ? "Add an agent" : "Add another agent").font(.system(size: 12, weight: .medium))
+            HStack(spacing: 8) {
+                TextField("Name (blank for Paseo's title)", text: $controlName)
+                    .textFieldStyle(.plain).font(.system(size: 11)).padding(10).background(fieldBackground)
+                FaceColorPicker(selection: $controlColor)
+            }
+            TextField("Paseo agent or session id", text: $controlAgentId)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11, design: .monospaced))
+                .padding(10)
+                .background(fieldBackground)
+            TextField("Host (blank for this Mac)", text: $controlHost)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11, design: .monospaced))
+                .padding(10)
+                .background(fieldBackground)
+            Button("Add agent") {
+                let id = controlAgentId, host = controlHost, name = controlName, color = controlColor
+                controlAgentId = ""; controlName = ""; controlColor = ""
+                Task { await store.addSeat(agentId: id, host: host.isEmpty ? nil : host, name: name, color: color) }
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(accent)
+            .disabled(controlAgentId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
 
@@ -312,6 +298,73 @@ struct SettingsView: View {
                 if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
             } catch {
                 store.errorText = "Login item: \(error.localizedDescription)"
+            }
+        }
+    }
+}
+
+/// One configured agent: rename, recolour, see its connection, remove it.
+struct SeatSettingsRow: View {
+    @EnvironmentObject var store: Store
+    @ObservedObject var seat: SeatSession
+    @State private var name = ""
+    @State private var color = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                FaceIcon(size: 24, palette: FacePalette.named(color.isEmpty ? FacePalette.pick(for: name.isEmpty ? seat.config.title : name) : color))
+                TextField(seat.config.title, text: $name)
+                    .textFieldStyle(.plain).font(.system(size: 12, weight: .medium))
+                    .onSubmit(save)
+                FaceColorPicker(selection: $color)
+                    .onChange(of: color) { save() }
+                Button("Remove") { store.removeSeat(seat) }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.red)
+            }
+            Text("Connection: " + seat.status + (seat.needsInput ? " · waiting for your permission" : ""))
+                .font(.system(size: 11)).foregroundStyle(SiftStyle.secondary)
+            Text("Asks: " + seat.asksSummary)
+                .font(.system(size: 11)).foregroundStyle(SiftStyle.secondary)
+            Text("Host: " + (seat.config.host.flatMap { $0.isEmpty ? nil : $0 } ?? "This Mac"))
+                .font(.system(size: 11)).foregroundStyle(SiftStyle.secondary).textSelection(.enabled)
+            DisclosureGroup("Session details") {
+                Text("Provider: " + seat.config.provider).font(.system(size: 11))
+                Text(seat.config.agentId).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
+            }.font(.system(size: 11)).foregroundStyle(SiftStyle.secondary)
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(0.04)))
+        .onAppear { name = seat.config.name; color = seat.config.color }
+        .onDisappear(perform: save)
+    }
+
+    private func save() {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != seat.config.name || color != seat.config.color else { return }
+        seat.rename(name: trimmed, color: color)
+    }
+}
+
+/// The face hues; the first dot is "automatic", a stable hue from the name.
+struct FaceColorPicker: View {
+    @Binding var selection: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach([""] + FacePalette.names.filter { $0 != "green" }, id: \.self) { name in
+                Button { selection = name } label: {
+                    Circle()
+                        .fill(name.isEmpty ? AnyShapeStyle(SiftStyle.raised) : AnyShapeStyle(FacePalette.named(name).top))
+                        .frame(width: 12, height: 12)
+                        .overlay(Circle().strokeBorder(.white.opacity(selection == name ? 0.9 : 0), lineWidth: 1.5))
+                }
+                .buttonStyle(.plain)
+                .help(name.isEmpty ? "Automatic" : name.capitalized)
+                .accessibilityLabel(name.isEmpty ? "Automatic colour" : name.capitalized)
             }
         }
     }

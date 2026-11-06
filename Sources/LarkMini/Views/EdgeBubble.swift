@@ -4,7 +4,7 @@ import SwiftUI
 
 /// A soft thought bubble beside the collapsed head: a new Lark arrival or a genuine Control need.
 struct EdgeBubble: Equatable, Identifiable {
-    enum Target: Equatable { case chat(String), inbox, control }
+    enum Target: Equatable { case chat(String), inbox, seat(String) }
 
     var id = UUID()
     var target: Target
@@ -13,9 +13,11 @@ struct EdgeBubble: Equatable, Identifiable {
     var names: [String] = []
     var count = 1
 
-    /// A burst of arrivals coalesces into one bubble; a Control need is never covered by chatter.
+    var isNeed: Bool { if case .seat = target { return true }; return false }
+
+    /// A burst of arrivals coalesces into one bubble; an agent need is never covered by chatter.
     static func arrival(_ current: EdgeBubble?, chatId: String, name: String, text: String) -> EdgeBubble {
-        guard let current, current.target != .control else {
+        guard let current, !current.isNeed else {
             return current ?? EdgeBubble(target: .chat(chatId), title: name, text: text, names: [name])
         }
         let names = current.names.contains(name) ? current.names : current.names + [name]
@@ -79,8 +81,8 @@ struct EdgeBubbleView: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: 4) {
             HStack(spacing: 10) {
-                if bubble.target == .control {
-                    ControlMark(size: 26).background(SiftStyle.raised, in: Circle())
+                if case .seat(let id) = bubble.target {
+                    FaceIcon(size: 26, palette: store.seats.first { $0.id == id }?.palette ?? .sift)
                 } else {
                     ChatBirdMark(size: 26)
                 }

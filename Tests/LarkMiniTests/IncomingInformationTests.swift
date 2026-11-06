@@ -78,7 +78,8 @@ final class IncomingInformationTests: XCTestCase {
             "new": AgentReading(messages: [AgentMessage(id: "r1", role: "assistant", text: "Here")],
                                 status: "idle", activity: nil, hasOlder: false)])
         let (seat, reading) = try await provider.readFollowing(old, tail: 80, state: state)
-        XCTAssertEqual(seat, ControlSeat(agentId: "new", title: "Control — takeover", host: "tcp://box:6767"))
+        XCTAssertEqual(seat, ControlSeat(agentId: "new", title: "Control — takeover", host: "tcp://box:6767", id: "old"),
+                       "the seat keeps its own id over a handoff, so seen needs and the draft follow the agent")
         XCTAssertEqual(reading.messages.map(\.id), ["r1"])
         XCTAssertEqual(StateFile(url: folder.appendingPathComponent("state.json")).current.control, seat)
 
@@ -159,5 +160,40 @@ final class ChatLinkTests: XCTestCase {
         XCTAssertEqual(linked.map(\.1), ["sift://chat/dm-ana", "sift://chat/dm-kai", "sift://chat/room", "https://example.com"])
         XCTAssertEqual(ChatLinks.chatId(from: URL(string: "sift://chat/dm-ana")!), "dm-ana")
         XCTAssertNil(ChatLinks.chatId(from: URL(string: "https://example.com/chat/x")!))
+    }
+}
+
+final class SeatListTests: XCTestCase {
+    func testOldSingleControlFileBecomesTheFirstSeatAndControlAddressesIt() throws {
+        let legacy = Data(#"{"pinned":[],"control":{"agentId":"a1","title":"Control","host":"tcp://box:6767"}}"#.utf8)
+        var state = try JSONDecoder().decode(AppState.self, from: legacy)
+        XCTAssertEqual(state.seats.map(\.id), ["a1"])
+        XCTAssertEqual(state.control?.agentId, "a1")
+
+        state.seats[0].name = "Old"
+        state.seats.append(ControlSeat(agentId: "f1", title: "Finance", name: "Finance", color: "pink"))
+        state.seats.append(ControlSeat(agentId: "c2", title: "Control (takeover)", name: "Control"))
+        XCTAssertEqual(state.control?.id, "c2", "the seat named Control wins over the first seat")
+        state.control = nil
+        XCTAssertEqual(state.seats.map(\.id), ["a1", "f1"])
+        state.control = ControlSeat(agentId: "c3", title: "Control")
+        XCTAssertEqual(state.seats.map(\.id), ["c3", "a1", "f1"], "a new Control goes first and keeps the other seats")
+
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(state)) as? [String: Any]
+        XCTAssertNil(encoded?["control"], "only the seat list is written")
+        let seats = try XCTUnwrap(encoded?["seats"] as? [[String: Any]])
+        XCTAssertEqual(seats.map { $0["id"] as? String }, ["c3", "a1", "f1"])
+        XCTAssertEqual(seats[2]["color"] as? String, "pink")
+    }
+
+    func testFaceColourIsStableForANameAndNeverTheSiftGreen() {
+        XCTAssertEqual(FacePalette.pick(for: "Finance"), FacePalette.pick(for: "Finance"))
+        for name in ["God", "Taro Twin", "Finance", "Unstick", "Control"] {
+            XCTAssertNotEqual(FacePalette.pick(for: name), "green")
+            XCTAssertTrue(FacePalette.names.contains(FacePalette.pick(for: name)))
+        }
+        XCTAssertEqual(FacePalette.named("green"), .sift)
+        XCTAssertEqual(FacePalette.named("nonsense"), .sift)
+        XCTAssertNotEqual(FacePalette.named("pink"), .sift)
     }
 }
