@@ -110,4 +110,20 @@ final class LarkFidelityTests: XCTestCase {
         for _ in 0..<50 { note = ["tag": "note", "elements": [note]] }
         XCTAssertEqual(LarkAPI.flattenRich(["elements": [[note]]], rows: "elements"), "")
     }
+
+    func testHostileNumbersCannotTrapConversions() throws {
+        let voice = try message("audio", #"{"file_key":"f","duration":1e300}"#)
+        XCTAssertEqual(voice.media, .audio(seconds: 86_400))
+        XCTAssertEqual(try message("audio", #"{"file_key":"f","duration":-5}"#).media, .audio(seconds: 0))
+        let raw: [String: Any] = ["message_id": "om_1", "msg_type": "text", "create_time": 1e300,
+                                  "body": ["content": #"{"text":"x"}"#], "sender": [:]]
+        XCTAssertEqual(LarkAPI.parseMessage(raw, chatId: "c", meId: "me")?.ts, 4_102_444_800_000)
+        XCTAssertEqual(LarkAPI.number(Double.nan, in: 0...10), 0)
+        XCTAssertEqual(LarkAPI.number("12", in: 0...10), 0, "only JSON numbers count")
+    }
+
+    func testAHugeCardQueuesNoMoreThanItsNodeBudget() {
+        let wide: [Any] = Array(repeating: ["tag": "img", "image_key": "k"], count: 1_000_000)
+        XCTAssertEqual(LarkAPI.embeddedImages(wide, maxNodes: 100).count, 99, "the list itself is one of the 100 nodes")
+    }
 }

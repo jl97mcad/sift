@@ -150,7 +150,7 @@ actor LarkAPI {
         let deadline = Date().addingTimeInterval(TimeInterval(code.expiresIn))
         var interval = code.interval
         while Date() < deadline {
-            try await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
+            try await Task.sleep(nanoseconds: UInt64(min(max(interval, 1), 60)) * 1_000_000_000)
             var req = URLRequest(url: openBase.appendingPathComponent("open-apis/authen/v2/oauth/token"))
             req.httpMethod = "POST"
             req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -496,7 +496,7 @@ actor LarkAPI {
         let content = (try? JSONSerialization.jsonObject(with: Data(contentString.utf8))) as? [String: Any] ?? [:]
         let senderDict = raw["sender"] as? [String: Any] ?? [:]
         let senderId = senderDict["id"] as? String ?? ""
-        let ts = Int64(raw["create_time"] as? String ?? "") ?? Int64(raw["create_time"] as? Double ?? 0)
+        let ts = Int64(raw["create_time"] as? String ?? "") ?? Int64(Self.number(raw["create_time"], in: 0...4_102_444_800_000))
         let mentionList = raw["mentions"] as? [[String: Any]] ?? []
         var mentionNames: [String: String] = [:]
         for mention in mentionList {
@@ -509,7 +509,7 @@ actor LarkAPI {
         var fileKey: String?
         var fileName: String?
         var media: LarkMedia?
-        let seconds = Int((content["duration"] as? NSNumber)?.doubleValue ?? 0) / 1000
+        let seconds = Int(Self.number(content["duration"], in: 0...86_400_000)) / 1000
         switch type {
         case "text":
             text = content["text"] as? String ?? ""
@@ -581,6 +581,13 @@ actor LarkAPI {
         )
     }
 
+    /// A JSON number as a finite value inside `range`, so a hostile value (1e300, NaN, negative)
+    /// cannot trap an integer conversion. Anything else is the range's lower bound.
+    static func number(_ value: Any?, in range: ClosedRange<Double>) -> Double {
+        guard let double = (value as? NSNumber)?.doubleValue, double.isFinite else { return range.lowerBound }
+        return min(max(double, range.lowerBound), range.upperBound)
+    }
+
     /// System events come as a template with named parts: "{from_user} invited {to_chatters}".
     static func systemText(_ content: [String: Any]) -> String {
         guard var text = content["template"] as? String ?? content["text"] as? String else { return "System message" }
@@ -611,14 +618,20 @@ actor LarkAPI {
         var keys: [String] = []
         var stack: [(node: Any, depth: Int)] = [(value, 0)]
         var visited = 0
+        // Children are queued only while visited plus queued nodes stay within the budget.
+        func push(_ children: [Any], depth: Int) {
+            let room = maxNodes - visited - stack.count
+            guard room > 0 else { return }
+            for child in children.prefix(room).reversed() { stack.append((child, depth + 1)) }
+        }
         while let (node, depth) = stack.popLast(), visited < maxNodes {
             visited += 1
             if let object = node as? [String: Any] {
                 if object["tag"] as? String == "img", let key = object["image_key"] as? String { keys.append(key) }
                 guard depth < maxDepth else { continue }
-                for key in object.keys.sorted().reversed() where key != "image_key" { stack.append((object[key]!, depth + 1)) }
+                push(object.keys.sorted().filter { $0 != "image_key" }.map { object[$0]! }, depth: depth)
             } else if let list = node as? [Any], depth < maxDepth {
-                for item in list.reversed() { stack.append((item, depth + 1)) }
+                push(list, depth: depth)
             }
         }
         return keys

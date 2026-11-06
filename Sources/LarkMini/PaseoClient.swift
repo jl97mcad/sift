@@ -412,17 +412,37 @@ final class PaseoClient {
     const {connectToDaemon} = await load('/utils/client.js');
     const {selectDaemonTarget} = await load('/utils/daemon-target.js');
     const {fetchAllAgents} = await load('/utils/agent-directory.js');
-    // Long text keeps its start and end (a command's failure is usually at the end); lists and
-    // objects stay short and shallow. Messages keep their start; the rest is in Paseo.
-    const bound = (v, depth = 0) => {
-      if (typeof v === 'string') return v.length > 1500 ? v.slice(0, 900) + '\n…\n' + v.slice(-500) : v;
-      if (Array.isArray(v)) return v.slice(0, 60).map(x => bound(x, depth + 1));
-      if (v && typeof v === 'object') return depth > 5 ? '…' : Object.fromEntries(Object.entries(v).slice(0, 60).map(([k, x]) => [k, bound(x, depth + 1)]));
-      return v;
+    // Every value is bounded: long text keeps its start and end (a command's failure is usually at
+    // the end), lists and objects keep 60 items, depth stops at 5 (checked before lists and
+    // objects alike) and each value spends at most `budget` characters.
+    const bound = (value, budget = 20000) => {
+      let left = budget;
+      const walk = (v, depth) => {
+        if (left <= 0) return '…';
+        if (typeof v === 'string') {
+          let t = v.length > 1500 ? v.slice(0, 900) + '\n…\n' + v.slice(-500) : v;
+          if (t.length > left) t = t.slice(0, left) + '…';
+          left -= t.length;
+          return t;
+        }
+        if (v === null || typeof v !== 'object') { left -= 8; return v; }
+        if (depth >= 5) { left -= 1; return '…'; }
+        if (Array.isArray(v)) {
+          const out = [];
+          for (const x of v.slice(0, 60)) { if (left <= 0) break; out.push(walk(x, depth + 1)); }
+          return out;
+        }
+        const out = {};
+        for (const [k, x] of Object.entries(v).slice(0, 60)) { if (left <= 0) break; left -= k.length; out[k] = walk(x, depth + 1); }
+        return out;
+      };
+      return walk(value, 0);
     };
     const spoken = (text) => typeof text === 'string' && text.length > 20000 ? text.slice(0, 20000) + '\n\n… (the rest of this message is in Paseo)' : text;
-    // The whole reading stays under a budget: details of the oldest steps go first, then the oldest entries.
-    const fit = (entries, budget = 600000) => {
+    // One budget for the whole reading: what is not the timeline is bounded first, then the
+    // timeline gets the rest. Details of the oldest steps go first, then the oldest entries.
+    const BUDGET = 600000;
+    const fit = (entries, budget) => {
       let size = JSON.stringify(entries).length, dropped = false;
       for (let i = 0; size > budget && i < entries.length; i++) {
         if (!entries[i].item) continue;
@@ -430,7 +450,7 @@ final class PaseoClient {
         entries[i].item = {type:entries[i].item.type, omitted:true};
         size -= before - JSON.stringify(entries[i]).length;
       }
-      while (size > budget && entries.length > 1) { size -= JSON.stringify(entries.shift()).length + 1; dropped = true; }
+      while (size > budget && entries.length > 0) { size -= JSON.stringify(entries.shift()).length + 1; dropped = true; }
       return dropped;
     };
     const client = await connectToDaemon({target:selectDaemonTarget(host ? {host} : {}),timeout:10000});
@@ -443,19 +463,19 @@ final class PaseoClient {
       try {
         const listed = await client.listPlugins();
         const suite = (Array.isArray(listed) ? listed : listed?.plugins ?? []).find(p => p.id === 'control-plugins');
-        asks = suite?.status === 'running' ? await client.invokePluginRpc('control-plugins', 'asks.open', {}) : {status:'off'};
+        asks = suite?.status === 'running' ? bound(await client.invokePluginRpc('control-plugins', 'asks.open', {}), 100000) : {status:'off'};
       } catch { asks = {status:'unavailable', reason:"This Control's plugins do not serve open asks yet"}; }
-      const permissions = (agent.pendingPermissions ?? []).map(p => bound({id:String(p.id ?? ''), kind:p.kind ?? 'other',
+      const permissions = (agent.pendingPermissions ?? []).slice(0, 20).map(p => bound({id:String(p.id ?? ''), kind:p.kind ?? 'other',
         name:p.name ?? '', title:p.title ?? '', description:p.description ?? '', input:p.input ?? null,
-        detail:p.detail ?? null, actions:(p.actions ?? []).map(a => a.label)})).filter(p => p.id);
-      const base = {title:agent.title ?? null, asks, permissions, needsInput:Boolean(agent.pendingPermissions?.length),
+        detail:p.detail ?? null, actions:(p.actions ?? []).slice(0, 10).map(a => a.label)}, 10000)).filter(p => p.id);
+      const base = {title:bound(agent.title ?? null, 2000), asks, permissions, needsInput:Boolean(agent.pendingPermissions?.length),
         serverId:client.getLastServerInfoMessage?.()?.serverId ?? null};
       if (agent.archivedAt) {
         const live = seat ? (await fetchAllAgents(client, {filter:{labels:{seat}}}))
           .filter(a => !a.archivedAt && a.labels?.seat === seat) : [];
         const next = live.length === 1 && live[0].id !== agent.id ? live[0] : null;
         process.stdout.write(JSON.stringify({...base, status:'archived', hasOlder:false, entries:[], action:null,
-          successor:next ? {id:next.id, title:next.title ?? null} : null}));
+          successor:next ? {id:next.id, title:bound(next.title ?? null, 2000)} : null}));
       } else {
         const timeline = await client.fetchAgentTimeline(agent.id,{direction:'tail',limit:Number(count),projection:'projected',timeout:10000});
         if (timeline.error) throw new Error('Paseo timeline is unavailable');
@@ -464,7 +484,7 @@ final class PaseoClient {
           return {id:e.item.messageId ?? `${timeline.epoch}:${e.seqStart}`, type:e.item.type, ts:Date.parse(e.timestamp) || null,
             text:said ? spoken(e.item.text) : undefined, item:said ? undefined : bound(e.item)};
         });
-        const trimmed = fit(entries);
+        const trimmed = fit(entries, BUDGET - JSON.stringify(base).length);
         const last = [...timeline.entries].reverse().find(e => e.item.type !== 'plugin')?.item;
         process.stdout.write(JSON.stringify({...base, status:agent.status, hasOlder:Boolean(timeline.hasOlder) || trimmed, entries,
           action:last ? {type:last.type, status:last.status, kind:last.detail?.type, name:last.name} : null}));
