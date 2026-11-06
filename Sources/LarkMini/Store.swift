@@ -3,6 +3,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 import CryptoKit
+import Combine
 
 @MainActor
 final class Store: ObservableObject {
@@ -16,8 +17,8 @@ final class Store: ObservableObject {
     @Published var openChat: Chat?
     @Published var isExpanded = true {
         didSet {
-            if isExpanded { dismissBubble() } else { controlTail = Self.controlPage }
-            sendWatchGap()
+            if isExpanded { dismissBubble() } else { seat?.closed() }
+            seats.forEach { $0.sendWatchGap() }
         }
     }
     /// The thought bubble beside the collapsed head.
@@ -26,7 +27,6 @@ final class Store: ObservableObject {
     @Published var controlFocusAsks = false
     private var bubbleExpiry: Task<Void, Never>?
     private var bubbleHeld = false
-    private var bubbledNeeds = Set<String>()
     @Published var showingSettings = false
     @Published var showingShortcuts = false
     @Published var deviceCode: DeviceCode?
@@ -51,79 +51,32 @@ final class Store: ObservableObject {
     @Published var memberNames: [String: String] = [:]
     @Published private(set) var chatLinks = ChatLinks(chats: [])
     private var directory: [Chat] = []
-    @Published var controlSeat: ControlSeat?
-    @Published var controlMessages: [AgentMessage] = []
-    @Published private(set) var controlTimeline: [ControlEntry] = []
-    /// How many timeline entries a refresh reads; "Earlier activity" raises it.
-    @Published private(set) var controlTail = Store.controlPage {
-        didSet { if controlTail != oldValue { controlWatch?.send("tail \(controlTail)") } }
-    }
-    /// The live Paseo connection for the seat (ADR 0009); nil while it restarts, when the
-    /// one-shot read every third poll takes over.
-    private var controlWatch: ChildStream?
-    private var watchGeneration = 0
-    private var watchFailures = 0
-    private var watchRestart: Task<Void, Never>?
-    /// A stopped helper whose group has not exited yet; its replacement waits for it.
-    private var retiringWatch: ChildStream?
-    private var watchStartWaiting = false
-    private var started = false
-    nonisolated static let controlPage = 80
-    nonisolated static let controlMaxTail = 400
-    private var controlServerId: String?
-    /// Leaving Control drops back to the short tail, so a collapsed panel polls little.
+    /// Agent seats in rail order; each owns its live connection and attention (ADR 0011).
+    @Published private(set) var seats: [SeatSession] = []
+    @Published var selectedSeatId: String?
+    private var seatChanges: [String: AnyCancellable] = [:]
+    private(set) var started = false
+    /// The selected seat's conversation is showing.
     @Published var controlOpen = false {
         didSet {
-            if !controlOpen { controlTail = Self.controlPage }
-            sendWatchGap()
+            if !controlOpen { seat?.closed() } else { seat?.sendWatchGap() }
         }
     }
-    @Published var controlBusy = false
-    @Published var controlSending = false
-    @Published var controlDraft = "" { didSet { saveDrafts() } }
-    @Published var controlActivity: String?
-    @Published private(set) var controlHasOlder = false
-    @Published private(set) var controlNeedsInput = false
-    @Published private(set) var controlPermissions: [PermissionRequest] = []
-    private var seenPermissions = Set(UserDefaults.standard.stringArray(forKey: "seenPermissions") ?? [])
-    @Published private(set) var asks: AskReading = .off
-    @Published private(set) var seenAsks = Set(UserDefaults.standard.stringArray(forKey: "seenAsks") ?? [])
-    @Published private(set) var controlStatus = "Not checked"
-    @Published private(set) var controlAttention: String? {
-        didSet {
-            if let seat = controlSeat {
-                UserDefaults.standard.set(controlAttention, forKey: "controlAttention.\(seat.agentId)")
-            }
-        }
-    }
-    private var attention = ControlAttention()
 
-    /// Live needs-you: Paseo is waiting on a permission, or the Control's runner has an open ask.
-    var openAskCount: Int { asks.asks.count }
-    /// Open asks plus pending Paseo requests: everything listed at the top of Control.
-    var openNeedCount: Int { openAskCount + controlPermissions.count }
-    /// Pulses until seen, then goes quiet like a read reply; open asks stay listed in Control.
-    var needsYouUnseen: Bool {
-        controlPermissions.contains { !seenPermissions.contains($0.id) } || asks.asks.contains { !seenAsks.contains($0.id) }
+    /// The seat whose conversation opens; the first one until another is chosen.
+    var seat: SeatSession? { seats.first { $0.id == selectedSeatId } ?? seats.first }
+    var controlSeat: ControlSeat? { seat?.config }
+    /// The seat that most needs the person: an unseen need first, then a new reply.
+    var attentionSeat: SeatSession? {
+        seats.first { $0.needsYouUnseen } ?? seats.first { $0.attention != nil }
     }
-
-    var attentionSummary: String? {
-        if controlNeedsInput { return "Waiting for your permission" }
-        if openAskCount > 0 { return openAskCount == 1 ? "1 open ask" : "\(openAskCount) open asks" }
-        return controlAttention
-    }
-
-    var asksSummary: String {
-        switch asks {
-        case .off: return "Off · this Control serves no open asks"
-        case .unavailable(let reason): return "Unknown · " + reason
-        case .available(let open): return open.isEmpty ? "None open" : "\(open.count) open"
-        }
-    }
+    var needsYouUnseen: Bool { seats.contains { $0.needsYouUnseen } }
+    var attentionSummary: String? { seats.lazy.compactMap { seat in seat.attentionSummary.map { "\(seat.label) · \($0)" } }.first }
+    var controlAttention: String? { seats.lazy.compactMap(\.attention).first }
 
     let tokens = TokenStore()
     private(set) lazy var api = LarkAPI(tokens: tokens)
-    private let stateFile = StateFile.shared
+    let stateFile = StateFile.shared
     private var pollTask: Task<Void, Never>?
     private var tickCount = 0
     private var hydrated = Set<String>()
@@ -138,7 +91,7 @@ final class Store: ObservableObject {
     /// They are retried every poll, since the order will not move again for the same message.
     private var pendingMovers: [String: Int] = [:]
     private var olderTokens: [String: String] = [:]
-    private var isDemo = false
+    private(set) var isDemo = false
 
     init() {
         let state = stateFile.current
@@ -147,11 +100,17 @@ final class Store: ObservableObject {
         if settings != state.settings { stateFile.update { $0.settings = settings } }
         pinned = state.pinned
         lastSeen = state.lastSeen
-        adoptSeat(state.control)
         muted = state.muted
         let saved = DraftFile.load()
         drafts = saved.chats
-        controlDraft = saved.control
+        SeatSession.migrateSeenLists(to: state.control)
+        setSeats(state.seats)
+        // Agents first: the panel opens on the first seat when there is one.
+        selectedSeatId = seats.first?.id
+        controlOpen = !seats.isEmpty
+        // The draft from before seats belonged to the one Control; it goes to that seat only.
+        if !saved.control.isEmpty, let control = state.control,
+           let seat = seats.first(where: { $0.id == control.id }), seat.draft.isEmpty { seat.draft = saved.control }
         loadedDrafts = true
         if let cache = Cache.load() {
             chats = cache.chats
@@ -183,9 +142,10 @@ final class Store: ObservableObject {
         }
         if state.pinned != pinned { pinned = state.pinned }
         if state.lastSeen != lastSeen { lastSeen = state.lastSeen }
-        if state.control != controlSeat {
-            adoptSeat(state.control)
-            if state.control == nil { controlOpen = false } }
+        if state.seats != seats.map(\.config) {
+            setSeats(state.seats)
+            if seats.isEmpty { controlOpen = false }
+        }
         if tokens.tokens != nil, auth == .signedOut { auth = .signedIn }
         if tokens.tokens == nil, auth == .signedIn { auth = .signedOut }
     }
@@ -195,7 +155,7 @@ final class Store: ObservableObject {
     func start() {
         guard !isDemo else { return }
         started = true
-        startControlWatch()
+        seats.forEach { $0.startWatch() }
         startPolling()
         Task {
             if tokens.tokens != nil {
@@ -224,7 +184,7 @@ final class Store: ObservableObject {
         guard !isDemo else { return }
         tickCount += 1
         // A slow Control read must never hold up Lark polling.
-        if controlSeat != nil, controlWatch == nil, tickCount % 3 == 1, !controlBusy { Task { await refreshControl() } }
+        if tickCount % 3 == 1 { seats.forEach { $0.poll() } }
         guard auth == .signedIn else { return }
         if tickCount % 6 == 1 {
             await loadChats(reset: true, quiet: true)
@@ -875,9 +835,11 @@ final class Store: ObservableObject {
 
     private var loadedDrafts = false
 
-    private func saveDrafts() {
+    func saveDrafts() {
         guard loadedDrafts, !isDemo else { return }
-        do { try DraftFile(chats: drafts, control: controlDraft).save() }
+        var all = drafts
+        for seat in seats { all["seat:" + seat.id] = seat.draft }
+        do { try DraftFile(chats: all).save() }
         catch { errorText = "Drafts could not be saved: \(error.localizedDescription)" }
     }
 
@@ -912,76 +874,95 @@ final class Store: ObservableObject {
         try await api.downloadFile(messageId: message.id, key: key, to: destination)
     }
 
-    // MARK: - Control seat
+    // MARK: - Agent seats
 
     var paseoAvailable: Bool { PaseoClient.isAvailable }
 
-    func setControlSeat(agentId: String, host: String? = nil, providerName: String? = nil) async {
+    /// Sessions follow the saved list: existing seats keep their live state (a handoff written by
+    /// the CLI is adopted), new ones start, removed ones stop their helper.
+    private func setSeats(_ configs: [ControlSeat]) {
+        let existing = Dictionary(seats.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let drafts = DraftFile.load().chats
+        let next = configs.map { config -> SeatSession in
+            if let session = existing[config.id] {
+                // A new session (handoff written by the CLI) restarts the seat; a rename does not.
+                if session.config.agentId != config.agentId || session.config.host != config.host
+                    || session.config.provider != config.provider { session.adopt(config) }
+                else if session.config != config { session.config = config }
+                return session
+            }
+            let session = SeatSession(config, store: self)
+            if !isDemo { session.draft = drafts["seat:" + config.id] ?? "" }
+            if started { session.startWatch() }
+            return session
+        }
+        for session in seats where !next.contains(where: { $0 === session }) { session.stopWatch() }
+        seats = next
+        seatChanges = Dictionary(uniqueKeysWithValues: next.map { session in
+            (session.id, session.objectWillChange.sink { [weak self] in self?.objectWillChange.send() })
+        })
+        if seat == nil { selectedSeatId = nil }
+    }
+
+    func addSeat(agentId: String, host: String? = nil, name: String = "", color: String = "", providerName: String? = nil) async {
         let trimmed = agentId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         errorText = nil
         let hostValue = host?.trimmingCharacters(in: .whitespacesAndNewlines)
         let provider = AgentProviders.resolve(providerName)
-        let info = await provider.inspect(id: trimmed, host: hostValue)
-        if info == nil {
+        guard let info = await provider.inspect(id: trimmed, host: hostValue) else {
             errorText = "No \(provider.name) session found for \(trimmed) (check the host)"
             return
         }
-        let seat = ControlSeat(agentId: trimmed, title: info?.title ?? "Control",
-                               host: hostValue, provider: providerName ?? AgentProviders.fallback)
-        adoptSeat(seat)
-        stateFile.update { $0.control = seat }
-        await refreshControl()
+        let seat = ControlSeat(agentId: trimmed, title: info.title, host: hostValue,
+                               provider: providerName ?? AgentProviders.fallback,
+                               name: name.trimmingCharacters(in: .whitespacesAndNewlines), color: color)
+        let state = stateFile.update { $0.seats.removeAll { $0.id == seat.id }; $0.seats.append(seat) }
+        setSeats(state.seats)
+        if let session = seats.first(where: { $0.id == seat.id }) { openSeat(session) }
     }
 
-    func disableControl() {
-        controlAttention = nil
-        adoptSeat(nil)
-        controlStatus = "Not connected"
-        controlOpen = false
-        stateFile.update { $0.control = nil }
+    func removeSeat(_ session: SeatSession) {
+        let state = stateFile.update { $0.seats.removeAll { $0.id == session.id } }
+        setSeats(state.seats)
+        drafts["seat:" + session.id] = nil
+        if selectedSeatId == session.id { selectedSeatId = seats.first?.id }
+        if seats.isEmpty { controlOpen = false }
     }
 
-    /// Per-seat state restarts with a new session; its own unread cue is device-local.
-    private func adoptSeat(_ seat: ControlSeat?) {
-        attention = ControlAttention()
-        controlStatus = "Not checked"
-        controlActivity = nil
-        controlNeedsInput = false
-        controlPermissions = []
-        controlHasOlder = false
-        controlMessages = []
-        controlTimeline = []
-        controlTail = Self.controlPage
-        controlServerId = nil
-        controlSeat = seat
-        startControlWatch()
-        if seat == nil { asks = .off }
-        // Older builds stored "Needs you" as a cue; it is live state now.
-        controlAttention = seat.flatMap { UserDefaults.standard.string(forKey: "controlAttention.\($0.agentId)") }
-            .flatMap { $0 == "Needs you" ? nil : $0 }
+    func moveSeat(from source: String, to target: String) {
+        let state = stateFile.update { state in
+            guard let from = state.seats.firstIndex(where: { $0.id == source }),
+                  let to = state.seats.firstIndex(where: { $0.id == target }), from != to else { return }
+            state.seats.insert(state.seats.remove(at: from), at: to)
+        }
+        setSeats(state.seats)
     }
 
-    func openControl() {
+    func openSeat(_ session: SeatSession) {
         if searchOpen { closeSearch() }
+        if selectedSeatId != session.id { seat?.closed() }
+        selectedSeatId = session.id
         controlOpen = true
         showingSettings = false
         openChat = nil
         markControlRead()
-        Task { await refreshControl() }
+        Task { await session.refresh() }
+    }
+
+    func openSeat(id: String) {
+        guard let session = seats.first(where: { $0.id == id }) else { return }
+        openSeat(session)
+    }
+
+    /// The selected seat, or the first one.
+    func openControl() {
+        guard let seat else { return }
+        openSeat(seat)
     }
 
     func closeControl() {
         controlOpen = false
-    }
-
-    var canLoadEarlierControl: Bool { controlHasOlder && controlTail < Self.controlMaxTail }
-
-    // ponytail: a longer tail per refresh, not cursor paging; the SDK connection (D) pages properly.
-    func loadEarlierControl() async {
-        guard canLoadEarlierControl else { return }
-        controlTail = min(Self.controlMaxTail, controlTail + Self.controlPage)
-        await refreshControl()
     }
 
     /// Paseo's own agent link. Each id is encoded down to unreserved characters, so an id cannot
@@ -994,47 +975,13 @@ final class Store: ObservableObject {
         return URL(string: "paseo://h/\(server)/agent/\(agent)")
     }
 
-    /// Opens this Control session in the Paseo app, where requests are answered.
-    func openInPaseo() {
-        guard let seat = controlSeat else { return }
-        if let server = controlServerId, let url = Self.paseoLink(server: server, agent: seat.agentId),
-           NSWorkspace.shared.open(url) { return }
-        if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "sh.paseo.desktop")
-            ?? URL(string: "file:///Applications/Paseo.app") {
-            NSWorkspace.shared.openApplication(at: app, configuration: .init())
-        }
-    }
-
     func markControlRead() {
-        guard controlOpen, isExpanded, PanelBridge.shared.panel?.isKeyWindow == true else { return }
-        controlAttention = nil
-        // Remember only needs that are still open, so both lists stay bounded.
-        let permissions = Set(controlPermissions.map(\.id))
-        if !permissions.isSubset(of: seenPermissions) {
-            seenPermissions = permissions
-            UserDefaults.standard.set(Array(permissions), forKey: "seenPermissions")
-        }
-        let open = Set(asks.asks.map(\.id))
-        guard !open.isSubset(of: seenAsks) else { return }
-        seenAsks = open
-        UserDefaults.standard.set(Array(seenAsks), forKey: "seenAsks")
+        seat?.markRead()
     }
 
-    /// Seen and bubbled needs only ever name what is open now, so a closed request can
-    /// never suppress a later one with the same id. Unknown asks change nothing.
-    private func reconcileNeeds(permissions: Set<String>, asks reading: AskReading) {
-        let keptPermissions = seenPermissions.intersection(permissions)
-        if keptPermissions != seenPermissions {
-            seenPermissions = keptPermissions
-            UserDefaults.standard.set(Array(keptPermissions), forKey: "seenPermissions")
-        }
-        guard case .available(let open) = reading else { return }
-        let openAsks = Set(open.map(\.id))
-        if !seenAsks.isSubset(of: openAsks) {
-            seenAsks.formIntersection(openAsks)
-            UserDefaults.standard.set(Array(seenAsks), forKey: "seenAsks")
-        }
-        bubbledNeeds.formIntersection(Set(permissions.map { "permission-\($0)" } + openAsks.map { "ask-\($0)" }))
+    static func sentKey(_ text: String) -> String {
+        SHA256.hash(data: Data(text.trimmingCharacters(in: .whitespacesAndNewlines).utf8))
+            .prefix(12).map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: - Edge bubble
@@ -1046,10 +993,10 @@ final class Store: ObservableObject {
         expireBubble(after: 6)
     }
 
-    /// A genuine Control need (open ask or permission request), shown once per need.
-    func needArrival(id: String, text: String) {
-        guard !isExpanded, bubbledNeeds.insert(id).inserted else { return }
-        bubble = EdgeBubble(target: .control, title: "Control needs you", text: text)
+    /// A genuine agent need (open ask or permission request); the seat shows each need once.
+    func needArrival(seat: SeatSession, text: String) {
+        guard !isExpanded else { return }
+        bubble = EdgeBubble(target: .seat(seat.id), title: "\(seat.label) needs you", text: text)
         expireBubble(after: 12)
     }
 
@@ -1071,7 +1018,7 @@ final class Store: ObservableObject {
         switch target {
         case .chat(let id): openLinkedChat(id)
         case .inbox: showInbox()
-        case .control: openControl(); controlFocusAsks = true
+        case .seat(let id): openSeat(id: id); controlFocusAsks = true
         }
         NotificationCenter.default.post(name: .expandPanel, object: nil)
     }
@@ -1085,208 +1032,12 @@ final class Store: ObservableObject {
         }
     }
 
-    /// Asks the live connection for a fresh reading, or reads once while it is down.
-    func refreshControl() async {
-        if let controlWatch { controlWatch.send("refresh"); return }
-        guard !isDemo, let seat = controlSeat, !controlBusy else { return }
-        controlBusy = true
-        defer { controlBusy = false }
-        let provider = AgentProviders.resolve(seat.provider)
-        do {
-            let (current, reading) = try await provider.readFollowing(seat, tail: controlTail, state: stateFile)
-            guard controlSeat == seat else { return }
-            if current != seat { adoptSeat(current) }
-            await applyControl(reading, seat: current)
-        } catch {
-            guard controlSeat == seat else { return }
-            controlUnavailable(error.localizedDescription)
-        }
-    }
-
-    private func controlUnavailable(_ reason: String) {
-        controlStatus = "Connection unavailable"
-        controlActivity = nil
-        errorText = "Control: \(reason)"
-    }
-
-    // MARK: - Live Paseo connection
-
-    private func startControlWatch() {
-        stopControlWatch()
-        // One helper per seat: a replacement starts only once the old helper's group is gone.
-        if retiringWatch != nil { watchStartWaiting = true; return }
-        guard started, !isDemo, let seat = controlSeat, seat.provider == "paseo" else { return }
-        let generation = watchGeneration
-        let current = { [weak self] in self?.watchGeneration == generation && self?.controlSeat == seat }
-        do {
-            controlWatch = try PaseoClient().watch(agentId: seat.agentId, host: seat.host, tail: controlTail,
-                onReading: { [weak self] reading in
-                    MainActor.assumeIsolated {
-                        guard let self, current() else { return }
-                        self.watchFailures = 0
-                        self.controlBusy = false
-                        if let moved = seat.following(reading.successor, state: self.stateFile) {
-                            self.adoptSeat(moved)
-                            return
-                        }
-                        self.enqueueControl(reading, seat: seat)
-                    }
-                },
-                onError: { [weak self] message in
-                    MainActor.assumeIsolated {
-                        guard let self, current() else { return }
-                        self.controlBusy = false
-                        self.controlUnavailable(message)
-                    }
-                },
-                onExit: { [weak self] _ in
-                    MainActor.assumeIsolated {
-                        guard let self, current() else { return }
-                        self.controlWatch = nil
-                        self.controlBusy = false
-                        self.restartControlWatch()
-                    }
-                })
-            controlBusy = controlTimeline.isEmpty
-            sendWatchGap()
-        } catch {
-            restartControlWatch()
-        }
-    }
-
-    /// Readings apply one at a time and only the newest waiting one, so a slow apply (it posts
-    /// notifications) can never land after a newer reading.
-    private func enqueueControl(_ reading: AgentReading, seat: ControlSeat) {
-        pendingReading = (reading, seat)
-        guard !applyingReading else { return }
-        applyingReading = true
-        Task {
-            while let (next, seat) = pendingReading {
-                pendingReading = nil
-                if controlSeat == seat { await applyControl(next, seat: seat) }
-            }
-            applyingReading = false
-        }
-    }
-
-    private var pendingReading: (AgentReading, ControlSeat)?
-    private var applyingReading = false
-
-    /// Backs off 5 s, 10 s, 20 s… up to a minute; polling covers the gap.
-    private func restartControlWatch() {
-        watchFailures += 1
-        let delay = min(60, 5 * pow(2, Double(min(watchFailures, 6) - 1)))
-        let generation = watchGeneration
-        watchRestart = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            guard !Task.isCancelled, let self, self.watchGeneration == generation else { return }
-            self.startControlWatch()
-        }
-    }
-
-    private func stopControlWatch() {
-        watchGeneration += 1
-        watchRestart?.cancel()
-        watchRestart = nil
-        guard let watch = controlWatch else { return }
-        controlWatch = nil
-        retiringWatch = watch
-        watch.stop { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self, self.retiringWatch === watch else { return }
-                self.retiringWatch = nil
-                if self.watchStartWaiting {
-                    self.watchStartWaiting = false
-                    self.startControlWatch()
-                }
-            }
-        }
-    }
-
-    /// Transcript changes reach an open Control within 3 s; elsewhere at most every 15 s.
-    /// Requests and finished turns are sent at once either way.
-    private func sendWatchGap() {
-        controlWatch?.send("gap \(controlOpen && isExpanded ? 3 : 15)")
-    }
-
-    private func applyControl(_ reading: AgentReading, seat current: ControlSeat) async {
-        let sent = Set(UserDefaults.standard.stringArray(forKey: "controlSent") ?? [])
-        let messages = reading.messages.map { message -> AgentMessage in
-            var message = message
-            message.sentHere = message.role == "user" && sent.contains(Self.sentKey(message.text))
-            return message
-        }
-        controlStatus = reading.status
-        controlActivity = reading.activity
-        controlHasOlder = reading.hasOlder
-        controlNeedsInput = reading.needsInput
-        asks = reading.asks
-        controlPermissions = reading.permissions
-        controlServerId = reading.serverId ?? controlServerId
-        reconcileNeeds(permissions: Set(reading.permissions.map(\.id)), asks: reading.asks)
-        for permission in reading.permissions where !seenPermissions.contains(permission.id) {
-            needArrival(id: "permission-\(permission.id)", text: permission.summary)
-        }
-        for ask in asks.asks where !seenAsks.contains(ask.id) {
-            needArrival(id: "ask-\(ask.id)", text: UpdateText.short(ask.title.isEmpty ? ask.question : ask.title, limit: 90))
-            await Notifications.shared.post(title: "Needs you" + (ask.plan.isEmpty ? "" : " · \(ask.plan)"),
-                body: UpdateText.short(ask.title.isEmpty ? ask.question : ask.title, limit: 120),
-                id: "ask-\(ask.id)", destination: "control")
-        }
-        let event = attention.observe(status: reading.status, needsInput: reading.needsInput, messages: messages)
-        if event.reply != nil || (event.alert != nil && !reading.needsInput) {
-            controlAttention = event.alert ?? "New reply"
-        }
-        markControlRead()
-        if let alert = event.alert, controlAttention != nil || reading.needsInput {
-            let reply = messages.last(where: { $0.isAssistant })?.text ?? "Open Control to respond."
-            await Notifications.shared.post(title: "Control · \(alert)",
-                body: reading.needsInput ? "Paseo is waiting for your permission." : UpdateText.short(reply, limit: 120),
-                id: "control-\(current.agentId)-\(event.reply ?? alert)-\(alert)", destination: "control")
-        }
-        if !messages.isEmpty || controlMessages.isEmpty {
-            controlMessages = messages
-            let byId = Dictionary(messages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            controlTimeline = reading.timeline.map { entry in
-                guard let message = entry.message, let marked = byId[message.id] else { return entry }
-                return .message(marked)
-            }
-        }
-    }
-
-    static func sentKey(_ text: String) -> String {
-        SHA256.hash(data: Data(text.trimmingCharacters(in: .whitespacesAndNewlines).utf8))
-            .prefix(12).map { String(format: "%02x", $0) }.joined()
-    }
-
-    func sendControl() async {
-        let text = controlDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, let seat = controlSeat, !controlSending else { return }
-        controlSending = true
-        controlActivity = "Sending"
-        controlDraft = ""
-        // Remember the prompt so the timeline can attribute it to you, not to automation.
-        let sent = UserDefaults.standard.stringArray(forKey: "controlSent") ?? []
-        UserDefaults.standard.set(Array((sent + [Self.sentKey(text)]).suffix(50)), forKey: "controlSent")
-        do {
-            try await AgentProviders.resolve(seat.provider)
-                .send(id: seat.agentId, host: seat.host, text: text)
-            try? await Task.sleep(nanoseconds: 800_000_000)
-            await refreshControl()
-        } catch {
-            errorText = error.localizedDescription
-            controlDraft = text
-        }
-        controlSending = false
-    }
-
     // MARK: - Demo
 
     static func demo(needsYou: Bool = false) -> Store {
         let store = Store()
         store.isDemo = true
         store.drafts = [:]
-        store.controlDraft = ""
         store.settings = Settings()
         store.muted = [:]
         store.auth = .signedIn
@@ -1355,12 +1106,12 @@ final class Store: ObservableObject {
         var event = design("m3", "u-riley", "share_calendar_event", "Calendar event · Icon review", 306_000)
         event.media = .other(type: "share_calendar_event")
         store.messages["c3"] = [design("g1", "u-riley", "text", "New dock icons are up", 0), reply, edited, voice, forward, sticker, event]
-        store.controlSeat = ControlSeat(agentId: "7b389a28-demo", title: "Control")
-        store.controlStatus = "idle"
-        store.asks = .available(needsYou ? [OpenAsk(id: "a1", plan: "ALT-12", title: "Publish the release notes",
-            question: "The notes are ready. Publish them now, or hold until tomorrow's standup?",
-            recommendation: "Publish now; nothing in them is client-visible.", link: URL(string: "https://linear.app"))] : [])
-        store.controlMessages = [
+        let control = SeatSession(ControlSeat(agentId: "7b389a28-demo", title: "Control"), store: store)
+        let finance = SeatSession(ControlSeat(agentId: "finance-demo", title: "Finance", name: "Finance", color: "yellow"), store: store)
+        store.setSeats([control.config, finance.config])
+        let seats = store.seats
+        store.selectedSeatId = seats[0].id
+        let messages = [
             AgentMessage(id: "msg_demo_1", role: "user", text: "Ship the release notes before standup.", ts: now - 240_000),
             AgentMessage(id: "control-wait:demo:receipt", role: "user", text: "Control wait receipt ALT-12: the release check finished.", ts: now - 200_000),
             AgentMessage(id: "p2", role: "assistant", text: "## Release notes are ready\n\nThe notes and changelog are ready for review.\n\n- **Changed:** grouped messages and a smaller composer.\n- **Checked:** the focused tests passed.\n- **Needs you:** choose when to publish.\n\n[Open the review](https://example.com/review)", ts: now - 180_000)
@@ -1374,16 +1125,20 @@ final class Store: ObservableObject {
             AgentStep(id: "s4", kind: "todo", title: "Checklist", target: "2 of 3 done", todos: [
                 .init(text: "Draft the notes", status: "completed"), .init(text: "Check the changelog", status: "completed"),
                 .init(text: "Publish", status: "in_progress")])]
-        let messages = store.controlMessages
-        store.controlTimeline = [.message(messages[0]), .message(messages[1]), .work(id: "work-s1", steps: work),
-                                 .notice(id: "n1", level: "warning", text: "Context is 90% full; Paseo will compact soon.", ts: nil),
-                                 .message(messages[2])]
-        if needsYou {
-            store.controlPermissions = [PermissionRequest(id: "p1", title: "Publish the release notes", kind: "tool", name: "Bash",
+        seats[0].demo(status: "idle",
+            asks: .available(needsYou ? [OpenAsk(id: "a1", plan: "ALT-12", title: "Publish the release notes",
+                question: "The notes are ready. Publish them now, or hold until tomorrow's standup?",
+                recommendation: "Publish now; nothing in them is client-visible.", link: URL(string: "https://linear.app"))] : []),
+            messages: messages,
+            timeline: [.message(messages[0]), .message(messages[1]), .work(id: "work-s1", steps: work),
+                       .notice(id: "n1", level: "warning", text: "Context is 90% full; Paseo will compact soon.", ts: nil),
+                       .message(messages[2])],
+            permissions: needsYou ? [PermissionRequest(id: "p1", title: "Publish the release notes", kind: "tool", name: "Bash",
                 description: "Runs the publish script for the release notes.", detail: "./scripts/publish-notes --channel release",
-                actions: ["Allow", "Deny"])]
-            store.controlNeedsInput = true
-        }
+                actions: ["Allow", "Deny"])] : [],
+            needsInput: needsYou)
+        let ledger = AgentMessage(id: "p3", role: "assistant", text: "October invoices are reconciled. Two are still unpaid; I have chased both.", ts: now - 3_600_000)
+        seats[1].demo(status: "idle", asks: .off, messages: [ledger], timeline: [.message(ledger)])
         store.openChat = nil
         store.settings.panelWidth = 400
         return store

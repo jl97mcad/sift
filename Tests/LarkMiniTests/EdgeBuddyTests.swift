@@ -15,7 +15,7 @@ final class EdgeBuddyTests: XCTestCase {
         XCTAssertEqual(mixed.target, .inbox)
         XCTAssertEqual(mixed.title, "4 new · Sam Patel, Riley Chen +1")
         XCTAssertEqual(mixed.text, "New icons")
-        let need = EdgeBubble(target: .control, title: "Control needs you", text: "Publish now?")
+        let need = EdgeBubble(target: .seat("control"), title: "Control needs you", text: "Publish now?")
         XCTAssertEqual(EdgeBubble.arrival(need, chatId: "c1", name: "Sam Patel", text: "Hi"), need)
     }
 

@@ -78,7 +78,8 @@ final class IncomingInformationTests: XCTestCase {
             "new": AgentReading(messages: [AgentMessage(id: "r1", role: "assistant", text: "Here")],
                                 status: "idle", activity: nil, hasOlder: false)])
         let (seat, reading) = try await provider.readFollowing(old, tail: 80, state: state)
-        XCTAssertEqual(seat, ControlSeat(agentId: "new", title: "Control — takeover", host: "tcp://box:6767"))
+        XCTAssertEqual(seat, ControlSeat(agentId: "new", title: "Control — takeover", host: "tcp://box:6767", id: "old"),
+                       "the seat keeps its own id over a handoff, so seen needs and the draft follow the agent")
         XCTAssertEqual(reading.messages.map(\.id), ["r1"])
         XCTAssertEqual(StateFile(url: folder.appendingPathComponent("state.json")).current.control, seat)
 
@@ -159,5 +160,73 @@ final class ChatLinkTests: XCTestCase {
         XCTAssertEqual(linked.map(\.1), ["sift://chat/dm-ana", "sift://chat/dm-kai", "sift://chat/room", "https://example.com"])
         XCTAssertEqual(ChatLinks.chatId(from: URL(string: "sift://chat/dm-ana")!), "dm-ana")
         XCTAssertNil(ChatLinks.chatId(from: URL(string: "https://example.com/chat/x")!))
+    }
+}
+
+final class SeatListTests: XCTestCase {
+    func testOldSingleControlFileBecomesTheFirstSeatAndControlAddressesIt() throws {
+        let legacy = Data(#"{"pinned":[],"control":{"agentId":"a1","title":"Control","host":"tcp://box:6767"}}"#.utf8)
+        var state = try JSONDecoder().decode(AppState.self, from: legacy)
+        XCTAssertEqual(state.seats.map(\.id), ["a1"])
+        XCTAssertEqual(state.control?.agentId, "a1")
+
+        state.seats[0].name = "Old"
+        state.seats.append(ControlSeat(agentId: "f1", title: "Finance", name: "Finance", color: "pink"))
+        state.seats.append(ControlSeat(agentId: "c2", title: "Control (takeover)", name: "Control"))
+        XCTAssertEqual(state.control?.id, "c2", "the seat named Control wins over the first seat")
+        state.control = nil
+        XCTAssertEqual(state.seats.map(\.id), ["a1", "f1"])
+        state.control = ControlSeat(agentId: "c3", title: "Control")
+        XCTAssertEqual(state.seats.map(\.id), ["c3", "a1", "f1"], "a new Control goes first and keeps the other seats")
+
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(state)) as? [String: Any]
+        XCTAssertNil(encoded?["control"], "only the seat list is written")
+        let seats = try XCTUnwrap(encoded?["seats"] as? [[String: Any]])
+        XCTAssertEqual(seats.map { $0["id"] as? String }, ["c3", "a1", "f1"])
+        XCTAssertEqual(seats[2]["color"] as? String, "pink")
+    }
+
+    func testFaceColourIsStableForANameAndNeverTheSiftGreen() {
+        XCTAssertEqual(FacePalette.pick(for: "Finance"), FacePalette.pick(for: "Finance"))
+        for name in ["God", "Taro Twin", "Finance", "Unstick", "Control"] {
+            XCTAssertNotEqual(FacePalette.pick(for: name), "green")
+            XCTAssertTrue(FacePalette.names.contains(FacePalette.pick(for: name)))
+        }
+        XCTAssertEqual(FacePalette.named("green"), .sift)
+        XCTAssertEqual(FacePalette.named("nonsense"), .sift)
+        XCTAssertNotEqual(FacePalette.named("pink"), .sift)
+    }
+}
+
+final class ControlSetTests: XCTestCase {
+    func testControlSetNamesTheSeatSoItStaysAddressableAmongOthers() {
+        var state = AppState()
+        state.seats = [ControlSeat(agentId: "f1", title: "Finance"), ControlSeat(agentId: "g1", title: "God")]
+        state.control = ControlSeat.control(agentId: "x1", title: "Session 42", name: nil, host: nil)
+        XCTAssertEqual(state.control?.id, "x1")
+        XCTAssertEqual(state.control?.label, "Control")
+        XCTAssertEqual(ControlSeat.control(agentId: "y", title: "Jon's Control (AWS)", name: nil, host: nil).label, "Jon's Control (AWS)")
+        XCTAssertEqual(ControlSeat.control(agentId: "z", title: "Session", name: "Ops", host: nil).label, "Ops")
+    }
+}
+
+final class SeenListMigrationTests: XCTestCase {
+    @MainActor
+    func testOldGlobalSeenListsMoveToTheControlSeatOnceAndNeverToOtherSeats() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "sift-seen-\(UUID().uuidString)"))
+        defaults.set(["ask-1"], forKey: "seenAsks")
+        defaults.set(["perm-1"], forKey: "seenPermissions")
+        let control = ControlSeat(agentId: "c1", title: "Control")
+        SeatSession.migrateSeenLists(to: control, defaults: defaults)
+        XCTAssertEqual(defaults.stringArray(forKey: "seenAsks.c1"), ["ask-1"])
+        XCTAssertEqual(defaults.stringArray(forKey: "seenPermissions.c1"), ["perm-1"])
+        XCTAssertNil(defaults.stringArray(forKey: "seenAsks"))
+        XCTAssertNil(defaults.stringArray(forKey: "seenPermissions"))
+        XCTAssertNil(defaults.stringArray(forKey: "seenAsks.f1"), "a later seat starts with nothing seen")
+        // Running again changes nothing, and a seat's own list is never overwritten.
+        defaults.set(["ask-9"], forKey: "seenAsks")
+        SeatSession.migrateSeenLists(to: control, defaults: defaults)
+        XCTAssertEqual(defaults.stringArray(forKey: "seenAsks.c1"), ["ask-1"])
+        XCTAssertNil(defaults.stringArray(forKey: "seenAsks"))
     }
 }

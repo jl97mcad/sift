@@ -31,6 +31,7 @@ enum CLI {
             case "messages": return try await messagesCommand(rest)
             case "pins": return try await pins(rest)
             case "control": return try await control(rest)
+            case "agents": return try await agents(rest)
             case "doctor": return try await doctor(rest)
             case "open": return openApp()
             case "selftest": return selftest()
@@ -102,7 +103,7 @@ enum CLI {
         if let agentId = flags.value("--agent-id") {
             let host = flags.value("--host")
             if let info = await PaseoClient().info(agentId: agentId, host: host) {
-                let seat = ControlSeat(agentId: agentId, title: flags.value("--title") ?? info.title, host: host)
+                let seat = ControlSeat.control(agentId: agentId, title: info.title, name: flags.value("--title"), host: host)
                 StateFile.shared.update { $0.control = seat }
                 payload["control"] = ["agent_id": seat.agentId, "title": seat.title,
                                       "host": host ?? "", "status": info.status]
@@ -278,9 +279,9 @@ enum CLI {
             guard let info = await client.info(agentId: agentId, host: flags.value("--host")) else {
                 return fail("No Paseo session found for \(agentId)")
             }
-            let seat = ControlSeat(agentId: agentId, title: flags.value("--title") ?? info.title,
-                                   host: flags.value("--host"),
-                                   provider: flags.value("--provider") ?? AgentProviders.fallback)
+            let seat = ControlSeat.control(agentId: agentId, title: info.title, name: flags.value("--title"),
+                                           host: flags.value("--host"),
+                                           provider: flags.value("--provider") ?? AgentProviders.fallback)
             state.update { $0.control = seat }
             return ok(["ok": true, "control": ["agent_id": seat.agentId, "title": seat.title, "status": info.status]])
         case "options", "find":
@@ -328,12 +329,68 @@ enum CLI {
         }
     }
 
+    /// Every seat, in rail order. `control` keeps addressing the Control seat.
+    private static func agents(_ args: [String]) async throws -> Int32 {
+        let state = StateFile.shared
+        let flags = Flags(args)
+        func row(_ seat: ControlSeat) -> [String: Any] {
+            ["id": seat.id, "agent_id": seat.agentId, "name": seat.label, "title": seat.title,
+             "color": seat.color, "host": seat.host ?? "", "provider": seat.provider]
+        }
+        func find(_ key: String?) -> ControlSeat? {
+            guard let key, !key.isEmpty else { return nil }
+            return state.current.seats.first { $0.id == key || $0.agentId == key || $0.label.caseInsensitiveCompare(key) == .orderedSame }
+        }
+        switch args.first ?? "list" {
+        case "list":
+            return ok(["ok": true, "agents": state.current.seats.map(row)])
+        case "add":
+            guard let agentId = flags.value("--agent-id") else { return fail("agents add needs --agent-id <paseo session id>") }
+            guard PaseoClient.isAvailable else { return fail("Paseo is not installed") }
+            guard let info = await PaseoClient().info(agentId: agentId, host: flags.value("--host")) else {
+                return fail("No Paseo session found for \(agentId)")
+            }
+            let color = flags.value("--color") ?? ""
+            guard color.isEmpty || FacePalette.names.contains(color) else {
+                return fail("Unknown --color; use one of " + FacePalette.names.joined(separator: ", "))
+            }
+            let seat = ControlSeat(agentId: agentId, title: info.title, host: flags.value("--host"),
+                                   provider: flags.value("--provider") ?? AgentProviders.fallback,
+                                   name: flags.value("--name") ?? "", color: color)
+            state.update { $0.seats.removeAll { $0.id == seat.id }; $0.seats.append(seat) }
+            return ok(["ok": true, "agent": row(seat), "status": info.status])
+        case "remove":
+            guard let seat = find(flags.value("--agent-id") ?? flags.value("--name") ?? (args.count > 1 ? args[1] : nil)) else {
+                return fail("agents remove needs an id or name of a configured agent")
+            }
+            state.update { $0.seats.removeAll { $0.id == seat.id } }
+            return ok(["ok": true, "removed": row(seat)])
+        case "set", "rename":
+            guard let seat = find(flags.value("--agent-id") ?? (args.count > 1 && !args[1].hasPrefix("--") ? args[1] : nil)) else {
+                return fail("agents set needs an id or name of a configured agent")
+            }
+            let color = flags.value("--color")
+            if let color, !color.isEmpty, !FacePalette.names.contains(color) {
+                return fail("Unknown --color; use one of " + FacePalette.names.joined(separator: ", "))
+            }
+            let saved = state.update { state in
+                guard let index = state.seats.firstIndex(where: { $0.id == seat.id }) else { return }
+                if let name = flags.value("--name") { state.seats[index].name = name }
+                if let color { state.seats[index].color = color }
+            }
+            return ok(["ok": true, "agent": saved.seats.first { $0.id == seat.id }.map(row) ?? [:]])
+        default:
+            return fail("Unknown agents command '\(args.first ?? "")'")
+        }
+    }
+
     private static func controlStatus(_ state: StateFile) -> [String: Any] {
         var payload: [String: Any] = ["ok": true, "paseo": PaseoClient.isAvailable]
         if let seat = state.current.control {
             payload["enabled"] = true
             payload["agent_id"] = seat.agentId
             payload["title"] = seat.title
+            payload["name"] = seat.label
         } else {
             payload["enabled"] = false
         }
@@ -457,7 +514,10 @@ enum CLI {
       chats     JSON: your chats (--limit N, default 20)
       messages  JSON: history for a chat (--chat-id oc_xxx --limit N)
       pins      list | add <chat_id> | add --name "Design" | remove <chat_id> | clear
-      control   Optional Paseo seat pinned above your chats
+      agents    Paseo agent seats shown before your chats, each with its own face
+                  list | add --agent-id ID [--host H] [--name "Finance"] [--color pink]
+                  set <id|name> [--name N] [--color C] | remove <id|name>
+      control   The Control seat (the agent named Control, else the first)
                   set --agent-id ID [--host H] [--provider paseo] [--title T]
                   status | send "text" | logs [--tail N] | digest | asks | off
       doctor    Check credentials, token and chat access

@@ -16,8 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     init(demo: Bool, openDemoChat: Bool = false, openDemoControl: Bool = false, openDemoSearch: Bool = false, demoNeedsYou: Bool = false) {
         demoMode = demo
         store = demo ? Store.demo(needsYou: demoNeedsYou) : Store()
+        if demo { store.controlOpen = openDemoControl }
         if demo && openDemoChat { store.openChat = store.chats.first }
-        if demo && openDemoControl { store.controlOpen = true }
         if demo && openDemoSearch {
             store.searchOpen = true
         }
@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.panelController.expand()
             if destination == "control" { self.store.openControl() }
+            else if destination.hasPrefix("seat:") { self.store.openSeat(id: String(destination.dropFirst(5))) }
             else if let chat = self.store.chats.first(where: { $0.id == destination }) { self.store.open(chat) }
         }
         Task { await Notifications.shared.refresh(request: Notifications.shared.enabled) }
@@ -189,7 +190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: "Open Sift", action: #selector(openPanel), keyEquivalent: "")
         menu.addItem(withTitle: "Settings", action: #selector(openSettings), keyEquivalent: "")
-        menu.addItem(withTitle: "Add Control seat…", action: #selector(openSettings), keyEquivalent: "")
+        menu.addItem(withTitle: "Add an agent…", action: #selector(openSettings), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit", action: #selector(quit), keyEquivalent: "q")
         for menuItem in menu.items { menuItem.target = self }

@@ -49,29 +49,56 @@ final class GazeTracker: ObservableObject {
     }
 }
 
+/// The face's colours. Sift's own head is the green; each agent seat gets its own hue.
+struct FacePalette: Equatable {
+    let top: Color
+    let bottom: Color
+    let rim: Color
+
+    static let sift = FacePalette(top: Color(red: 0.639, green: 0.847, blue: 0.529),
+                                  bottom: Color(red: 0.520, green: 0.780, blue: 0.480),
+                                  rim: Color(red: 0.243, green: 0.475, blue: 0.239))
+
+    /// Hues that read apart from each other and from the green head.
+    static let names = ["blue", "purple", "pink", "orange", "yellow", "teal", "red", "green"]
+    private static let hues: [String: Double] = ["blue": 0.58, "purple": 0.74, "pink": 0.9, "orange": 0.08,
+                                                 "yellow": 0.15, "teal": 0.47, "red": 0.0, "green": 0.28]
+
+    static func named(_ name: String) -> FacePalette {
+        guard name != "green", let hue = hues[name] else { return sift }
+        return FacePalette(top: Color(hue: hue, saturation: 0.42, brightness: 0.88),
+                           bottom: Color(hue: hue, saturation: 0.46, brightness: 0.78),
+                           rim: Color(hue: hue, saturation: 0.55, brightness: 0.47))
+    }
+
+    /// A stable colour for a seat that chose none: the same name always gets the same hue.
+    static func pick(for label: String) -> String {
+        let sum = label.unicodeScalars.reduce(0) { $0 &+ Int($1.value) }
+        return names[sum % (names.count - 1)]  // never the Sift green
+    }
+}
+
 struct FaceIcon: View {
     @ObservedObject private var gaze = GazeTracker.shared
     @Environment(\.siftReduceMotion) private var reduceMotion
     @State private var blinking = false
     @State private var blinkTask: Task<Void, Never>?
     var size: CGFloat = 36
+    var palette: FacePalette = .sift
 
-    static let faceTop = Color(red: 0.639, green: 0.847, blue: 0.529)
-    static let faceBottom = Color(red: 0.520, green: 0.780, blue: 0.480)
-    static let rim = Color(red: 0.243, green: 0.475, blue: 0.239)
     static let eye = Color(red: 1.0, green: 0.976, blue: 0.922)
     static let eyeStroke = Color(red: 0.259, green: 0.478, blue: 0.239)
     static let aura = Color(red: 0.196, green: 0.784, blue: 0.353)
-    static let face = faceTop
+    static let face = FacePalette.sift.top
 
     var body: some View {
         ZStack {
             Circle()
                 .fill(
-                    LinearGradient(colors: [FaceIcon.faceTop, FaceIcon.faceBottom],
+                    LinearGradient(colors: [palette.top, palette.bottom],
                                    startPoint: .topLeading, endPoint: .bottomTrailing)
                 )
-            HStack(spacing: 6) {
+            HStack(spacing: size / 6) {
                 eyeShape
                 eyeShape
             }
@@ -81,7 +108,7 @@ struct FaceIcon: View {
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
-        .overlay(Circle().strokeBorder(FaceIcon.rim.opacity(0.55), lineWidth: 0.75))
+        .overlay(Circle().strokeBorder(palette.rim.opacity(0.55), lineWidth: 0.75))
         .onAppear { startBlinking() }
         .onChange(of: reduceMotion) {
             blinkTask?.cancel()
@@ -120,10 +147,10 @@ struct FaceIcon: View {
     private var eyeShape: some View {
         RoundedRectangle(cornerRadius: 3, style: .continuous)
             .fill(FaceIcon.eye)
-            .frame(width: 6, height: 9)
+            .frame(width: size / 6, height: size / 4)
             .overlay(
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .strokeBorder(FaceIcon.eyeStroke.opacity(0.25), lineWidth: 0.5)
+                    .strokeBorder(palette.rim.opacity(0.25), lineWidth: 0.5)
             )
     }
 }
