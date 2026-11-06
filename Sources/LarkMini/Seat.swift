@@ -54,8 +54,10 @@ final class SeatSession: ObservableObject, Identifiable {
         self.config = config
         self.id = config.id
         self.store = store
-        seenPermissions = Set(UserDefaults.standard.stringArray(forKey: "seenPermissions.\(config.id)") ?? [])
-        seenAsks = Set(UserDefaults.standard.stringArray(forKey: "seenAsks.\(config.id)") ?? [])
+        // Before seats, seen needs were one list for the one Control; it carries over.
+        let defaults = UserDefaults.standard
+        seenPermissions = Set(defaults.stringArray(forKey: "seenPermissions.\(config.id)") ?? defaults.stringArray(forKey: "seenPermissions") ?? [])
+        seenAsks = Set(defaults.stringArray(forKey: "seenAsks.\(config.id)") ?? defaults.stringArray(forKey: "seenAsks") ?? [])
         // Older builds stored "Needs you" as a cue; it is live state now.
         attention = UserDefaults.standard.string(forKey: "controlAttention.\(config.id)").flatMap { $0 == "Needs you" ? nil : $0 }
     }

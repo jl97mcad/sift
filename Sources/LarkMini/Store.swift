@@ -882,7 +882,10 @@ final class Store: ObservableObject {
         let drafts = DraftFile.load().chats
         let next = configs.map { config -> SeatSession in
             if let session = existing[config.id] {
-                if session.config != config { session.adopt(config) }
+                // A new session (handoff written by the CLI) restarts the seat; a rename does not.
+                if session.config.agentId != config.agentId || session.config.host != config.host
+                    || session.config.provider != config.provider { session.adopt(config) }
+                else if session.config != config { session.config = config }
                 return session
             }
             let session = SeatSession(config, store: self)
@@ -919,6 +922,7 @@ final class Store: ObservableObject {
     func removeSeat(_ session: SeatSession) {
         let state = stateFile.update { $0.seats.removeAll { $0.id == session.id } }
         setSeats(state.seats)
+        drafts["seat:" + session.id] = nil
         if selectedSeatId == session.id { selectedSeatId = seats.first?.id }
         if seats.isEmpty { controlOpen = false }
     }
