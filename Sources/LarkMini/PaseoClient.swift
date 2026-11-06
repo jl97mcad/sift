@@ -381,12 +381,14 @@ final class PaseoClient {
         var loaded = false
         do {
             return try ChildStream(helper, arguments, environment: Self.helperEnvironment, onLine: { line in
-                // Any output means Node has loaded the script, so the file can go now: a helper that
-                // outlives Sift (it exits when Sift's end of stdin closes) leaves nothing behind.
-                if !loaded { loaded = true; try? FileManager.default.removeItem(at: script) }
                 let text = String(decoding: line, as: UTF8.self)
-                if let reading = Self.reading(text) { onReading(reading) }
+                // Only the script writes readings and error records, so one of those proves Node has
+                // loaded it and the file can go: a helper that outlives Sift (it exits when Sift's end
+                // of stdin closes) leaves nothing behind. Node's own warnings prove nothing.
+                let loadedNow = { if !loaded { loaded = true; try? FileManager.default.removeItem(at: script) } }
+                if let reading = Self.reading(text) { loadedNow(); onReading(reading) }
                 else if let json = try? JSONSerialization.jsonObject(with: line) as? [String: Any], let error = json["error"] as? String {
+                    loadedNow()
                     onError(error)
                 } else if !text.hasPrefix("(node:") { onError(Self.reason(text)) }  // Node's own warnings are not errors
             }, onExit: { status in
@@ -400,13 +402,19 @@ final class PaseoClient {
     }
 
     /// Removes reader scripts left by a run that never got to clean up (a quit before the first
-    /// reading, or an older build). No read lives an hour: one-shot reads time out in 30 s.
+    /// reading, or an older build). Only Sift's exact names (`sift-read-<UUID>.mjs`) that are
+    /// regular files owned by this user and older than an hour; no read lives that long.
     static func sweepScripts(in folder: URL = FileManager.default.temporaryDirectory, olderThan age: TimeInterval = 3_600) {
         let files = FileManager.default
         guard let names = try? files.contentsOfDirectory(atPath: folder.path) else { return }
-        for name in names where name.hasPrefix("sift-read-") && name.hasSuffix(".mjs") {
+        let pattern = #"^sift-read-[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}\.mjs$"#
+        for name in names where name.range(of: pattern, options: .regularExpression) != nil {
             let url = folder.appendingPathComponent(name)
-            guard let modified = (try? files.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
+            // attributesOfItem does not follow symbolic links, so a link is never mistaken for a file.
+            guard let attributes = try? files.attributesOfItem(atPath: url.path),
+                  attributes[.type] as? FileAttributeType == .typeRegular,
+                  (attributes[.ownerAccountID] as? NSNumber)?.uint32Value == getuid(),
+                  let modified = attributes[.modificationDate] as? Date,
                   Date().timeIntervalSince(modified) > age else { continue }
             try? files.removeItem(at: url)
         }

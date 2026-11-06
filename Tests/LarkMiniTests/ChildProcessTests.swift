@@ -95,17 +95,27 @@ final class ChildProcessTests: XCTestCase {
         } catch let error as ChildProcess.LaunchError { XCTAssertEqual(error.code, ECHILD) }
     }
 
-    func testStaleReaderScriptsAreSweptAndFreshOnesKept() throws {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
-        let stale = folder.appendingPathComponent("sift-read-old.mjs"), fresh = folder.appendingPathComponent("sift-read-new.mjs")
-        let other = folder.appendingPathComponent("other.mjs")
-        for file in [stale, fresh, other] { try Data("x".utf8).write(to: file) }
-        for file in [stale, other] {
-            try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-7_200)], ofItemAtPath: file.path)
+    func testOnlyStaleSiftReaderScriptsAreSwept() throws {
+        let files = FileManager.default
+        let folder = files.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try files.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? files.removeItem(at: folder) }
+        let id = { "sift-read-\(UUID().uuidString).mjs" }
+        let stale = id(), fresh = id(), link = id()
+        let names = [stale, fresh, "sift-read-old.mjs", "sift-read-\(UUID().uuidString.lowercased()).mjs", "other.mjs"]
+        for name in names { try Data("x".utf8).write(to: folder.appendingPathComponent(name)) }
+        try files.createSymbolicLink(atPath: folder.appendingPathComponent(link).path, withDestinationPath: folder.appendingPathComponent("other.mjs").path)
+        let old = Date().addingTimeInterval(-7_200)
+        for name in names where name != fresh {
+            try files.setAttributes([.modificationDate: old], ofItemAtPath: folder.appendingPathComponent(name).path)
         }
+        // Back-date the link itself (not its target), so only the regular-file check can keep it.
+        var times = [timeval(tv_sec: Int(old.timeIntervalSince1970), tv_usec: 0), timeval(tv_sec: Int(old.timeIntervalSince1970), tv_usec: 0)]
+        XCTAssertEqual(lutimes(folder.appendingPathComponent(link).path, &times), 0)
         PaseoClient.sweepScripts(in: folder)
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted(), ["other.mjs", "sift-read-new.mjs"])
+        let left = Set(try files.contentsOfDirectory(atPath: folder.path))
+        XCTAssertFalse(left.contains(stale), "an old Sift script goes")
+        XCTAssertEqual(left, Set(names).subtracting([stale]).union([link]), "fresh, foreign-named and linked entries stay")
+        XCTAssertTrue(files.fileExists(atPath: folder.appendingPathComponent("other.mjs").path), "a link's target is untouched")
     }
 }
