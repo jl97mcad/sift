@@ -155,6 +155,11 @@ struct AgentStep: Identifiable, Equatable {
     /// nil for messages and notices, which are not steps.
     init?(id: String, ts: Int64?, item: [String: Any]) {
         let type = item["type"] as? String ?? ""
+        if item["omitted"] as? Bool == true, !["user_message", "assistant_message", "error", "notification"].contains(type) {
+            self.init(id: id, ts: ts, kind: type, title: "Details left out to keep this reading small",
+                      detail: "Paseo shows this step in full.", unrendered: true)
+            return
+        }
         switch type {
         case "reasoning":
             self.init(id: id, ts: ts, kind: type, title: "Thought", detail: item["text"] as? String ?? "")
@@ -407,12 +412,26 @@ final class PaseoClient {
     const {connectToDaemon} = await load('/utils/client.js');
     const {selectDaemonTarget} = await load('/utils/daemon-target.js');
     const {fetchAllAgents} = await load('/utils/agent-directory.js');
-    // Long text keeps its start and end (a command's failure is usually at the end); lists stay short.
+    // Long text keeps its start and end (a command's failure is usually at the end); lists and
+    // objects stay short and shallow. Messages keep their start; the rest is in Paseo.
     const bound = (v, depth = 0) => {
       if (typeof v === 'string') return v.length > 1500 ? v.slice(0, 900) + '\n…\n' + v.slice(-500) : v;
       if (Array.isArray(v)) return v.slice(0, 60).map(x => bound(x, depth + 1));
-      if (v && typeof v === 'object') return depth > 5 ? '…' : Object.fromEntries(Object.entries(v).map(([k, x]) => [k, bound(x, depth + 1)]));
+      if (v && typeof v === 'object') return depth > 5 ? '…' : Object.fromEntries(Object.entries(v).slice(0, 60).map(([k, x]) => [k, bound(x, depth + 1)]));
       return v;
+    };
+    const spoken = (text) => typeof text === 'string' && text.length > 20000 ? text.slice(0, 20000) + '\n\n… (the rest of this message is in Paseo)' : text;
+    // The whole reading stays under a budget: details of the oldest steps go first, then the oldest entries.
+    const fit = (entries, budget = 600000) => {
+      let size = JSON.stringify(entries).length, dropped = false;
+      for (let i = 0; size > budget && i < entries.length; i++) {
+        if (!entries[i].item) continue;
+        const before = JSON.stringify(entries[i]).length;
+        entries[i].item = {type:entries[i].item.type, omitted:true};
+        size -= before - JSON.stringify(entries[i]).length;
+      }
+      while (size > budget && entries.length > 1) { size -= JSON.stringify(entries.shift()).length + 1; dropped = true; }
+      return dropped;
     };
     const client = await connectToDaemon({target:selectDaemonTarget(host ? {host} : {}),timeout:10000});
     try {
@@ -443,10 +462,11 @@ final class PaseoClient {
         const entries = timeline.entries.map(e => {
           const said = ['user_message','assistant_message'].includes(e.item.type);
           return {id:e.item.messageId ?? `${timeline.epoch}:${e.seqStart}`, type:e.item.type, ts:Date.parse(e.timestamp) || null,
-            text:said ? e.item.text : undefined, item:said ? undefined : bound(e.item)};
+            text:said ? spoken(e.item.text) : undefined, item:said ? undefined : bound(e.item)};
         });
+        const trimmed = fit(entries);
         const last = [...timeline.entries].reverse().find(e => e.item.type !== 'plugin')?.item;
-        process.stdout.write(JSON.stringify({...base, status:agent.status, hasOlder:Boolean(timeline.hasOlder), entries,
+        process.stdout.write(JSON.stringify({...base, status:agent.status, hasOlder:Boolean(timeline.hasOlder) || trimmed, entries,
           action:last ? {type:last.type, status:last.status, kind:last.detail?.type, name:last.name} : null}));
       }
     } finally { await client.close(); }

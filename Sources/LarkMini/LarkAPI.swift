@@ -605,14 +605,23 @@ actor LarkAPI {
         return parts.joined(separator: " · ")
     }
 
-    /// Image keys inside a post or card, in order, at any depth.
-    static func embeddedImages(_ value: Any) -> [String] {
-        if let object = value as? [String: Any] {
-            let own = object["tag"] as? String == "img" ? [object["image_key"] as? String].compactMap { $0 } : []
-            return own + object.keys.sorted().flatMap { $0 == "image_key" ? [] : embeddedImages(object[$0]!) }
+    /// Image keys inside a post or card, in order. The walk is iterative and bounded in depth and
+    /// nodes, so hostile nesting cannot exhaust the stack or the CPU.
+    static func embeddedImages(_ value: Any, maxDepth: Int = 16, maxNodes: Int = 5_000) -> [String] {
+        var keys: [String] = []
+        var stack: [(node: Any, depth: Int)] = [(value, 0)]
+        var visited = 0
+        while let (node, depth) = stack.popLast(), visited < maxNodes {
+            visited += 1
+            if let object = node as? [String: Any] {
+                if object["tag"] as? String == "img", let key = object["image_key"] as? String { keys.append(key) }
+                guard depth < maxDepth else { continue }
+                for key in object.keys.sorted().reversed() where key != "image_key" { stack.append((object[key]!, depth + 1)) }
+            } else if let list = node as? [Any], depth < maxDepth {
+                for item in list.reversed() { stack.append((item, depth + 1)) }
+            }
         }
-        if let list = value as? [Any] { return list.flatMap(embeddedImages) }
-        return []
+        return keys
     }
 
     /// Lark's read API returns posts as `{title, content: [[element]]}` and cards in a reduced
@@ -628,14 +637,14 @@ actor LarkAPI {
         if let title = body["title"] as? String, !title.isEmpty { lines.append(title) }
         var controls = false
         for row in body[key] as? [[[String: Any]]] ?? [] {
-            let line = row.map { inline($0, controls: &controls) }.joined()
+            let line = row.map { inline($0, controls: &controls, depth: 0) }.joined()
             if !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { lines.append(line) }
         }
         if controls { lines.append("Buttons on this card work in Lark.") }
         return lines.joined(separator: "\n")
     }
 
-    private static func inline(_ element: [String: Any], controls: inout Bool) -> String {
+    private static func inline(_ element: [String: Any], controls: inout Bool, depth: Int) -> String {
         let text = element["text"] as? String ?? ""
         switch element["tag"] as? String {
         case "a":
@@ -651,7 +660,9 @@ actor LarkAPI {
         case "hr": return "———"
         case "code_block": return text
         case "note":
-            return (element["elements"] as? [[String: Any]] ?? []).map { inline($0, controls: &controls) }.joined(separator: " ")
+            // Notes nest one level in practice; deeper nesting is cut off, not followed.
+            guard depth < 4 else { return "" }
+            return (element["elements"] as? [[String: Any]] ?? []).map { inline($0, controls: &controls, depth: depth + 1) }.joined(separator: " ")
         case "button", "select_static", "select_person", "multi_select_static", "multi_select_person",
              "overflow", "date_picker", "picker_time", "picker_datetime", "input", "checker":
             controls = true

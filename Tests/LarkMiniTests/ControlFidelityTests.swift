@@ -61,4 +61,21 @@ final class ControlFidelityTests: XCTestCase {
         XCTAssertEqual(reading.permissions[1].actions, ["Allow", "Deny"])
         XCTAssertEqual(reading.permissions[1].summary, "Wants to use Bash: Run a command")
     }
+
+    func testPaseoLinksCannotBeReroutedByHostileIds() throws {
+        let url = try XCTUnwrap(Store.paseoLink(server: "srv/../x?y=1", agent: "a#frag b"))
+        XCTAssertEqual(url.host, "h")
+        XCTAssertNil(url.query)
+        XCTAssertNil(url.fragment)
+        XCTAssertEqual(url.pathComponents.filter { $0 != "/" }.count, 3)
+        XCTAssertEqual(Store.paseoLink(server: "srv_1", agent: "abc-123")?.absoluteString, "paseo://h/srv_1/agent/abc-123")
+        XCTAssertNil(Store.paseoLink(server: "", agent: "abc"))
+    }
+
+    func testStepsLeftOutForSizeAreNamedNotHidden() throws {
+        let reading = try XCTUnwrap(PaseoClient.reading(#"{"status":"idle","entries":[{"id":"e:1","type":"tool_call","item":{"type":"tool_call","omitted":true}},{"id":"a1","type":"assistant_message","text":"Done"}]}"#))
+        guard case .work(_, let steps) = reading.timeline.first else { return XCTFail() }
+        XCTAssertTrue(steps[0].unrendered)
+        XCTAssertEqual(steps[0].title, "Details left out to keep this reading small")
+    }
 }

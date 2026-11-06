@@ -924,11 +924,20 @@ final class Store: ObservableObject {
         await refreshControl()
     }
 
+    /// Paseo's own agent link. Each id is encoded down to unreserved characters, so an id cannot
+    /// add a path, query or fragment to the route.
+    nonisolated static func paseoLink(server: String, agent: String) -> URL? {
+        let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        guard !server.isEmpty, !agent.isEmpty,
+              let server = server.addingPercentEncoding(withAllowedCharacters: unreserved),
+              let agent = agent.addingPercentEncoding(withAllowedCharacters: unreserved) else { return nil }
+        return URL(string: "paseo://h/\(server)/agent/\(agent)")
+    }
+
     /// Opens this Control session in the Paseo app, where requests are answered.
     func openInPaseo() {
         guard let seat = controlSeat else { return }
-        let segment = { (value: String) in value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(.init(charactersIn: "/"))) ?? value }
-        if let server = controlServerId, let url = URL(string: "paseo://h/\(segment(server))/agent/\(segment(seat.agentId))"),
+        if let server = controlServerId, let url = Self.paseoLink(server: server, agent: seat.agentId),
            NSWorkspace.shared.open(url) { return }
         if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "sh.paseo.desktop")
             ?? URL(string: "file:///Applications/Paseo.app") {

@@ -99,4 +99,15 @@ final class LarkFidelityTests: XCTestCase {
         let recalled = try message("text", #"{"text":"This message was recalled"}"#, extra: ["deleted": true])
         XCTAssertEqual(Store.merge([first], [recalled])?.first?.deleted, true)
     }
+
+    func testDeeplyNestedRichContentIsWalkedWithinBounds() {
+        var nested: Any = ["tag": "img", "image_key": "deep"]
+        for _ in 0..<2_000 { nested = [nested] }
+        XCTAssertEqual(LarkAPI.embeddedImages(nested), [], "beyond the depth limit nothing is followed")
+        let wide: [Any] = (0..<20_000).map { ["tag": "img", "image_key": "k\($0)"] }
+        XCTAssertLessThan(LarkAPI.embeddedImages(wide).count, 5_000, "the node limit stops a huge card")
+        var note: [String: Any] = ["tag": "text", "text": "x"]
+        for _ in 0..<50 { note = ["tag": "note", "elements": [note]] }
+        XCTAssertEqual(LarkAPI.flattenRich(["elements": [[note]]], rows: "elements"), "")
+    }
 }
