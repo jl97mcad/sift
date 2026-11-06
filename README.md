@@ -100,8 +100,9 @@ sift control set --agent-id <paseo-agent-id> --host tcp://<daemon-host>:<port>
 sift control status
 ```
 
-Or use Settings → Control seat. Sift sends with `paseo send` and reads a
-bounded, typed timeline through the installed Paseo app's own client. Only
+Or use Settings → Control seat. Sift sends with `paseo send` and keeps one
+connection open through the installed Paseo app's own client: Paseo's events
+bring a fresh, bounded, typed timeline when something changes. Only
 prompts and replies show as messages; thoughts and tool steps show as labelled,
 collapsed work. When a handoff archives the
 seated session and exactly one live session on the same host carries its
@@ -153,7 +154,9 @@ Every command prints one JSON object and exits non-zero on failure.
 - Reads trail the native client by a few seconds.
 - The Control read depends on the Paseo desktop app's internal layout (0.14).
   A different version may fail visibly with "Paseo conversation data is
-  unavailable".
+  unavailable"; Sift then falls back to reading every 15 seconds.
+- The live Control connection keeps one Paseo helper process running (about
+  190 MB of memory, close to no CPU at rest).
 - Control history shows the latest 80 timeline entries, up to 400 with
   "Earlier activity"; older history stays in Paseo. Paseo artifacts are not
   shown yet.

@@ -15,7 +15,10 @@ final class Store: ObservableObject {
     @Published private(set) var me: Me?
     @Published var openChat: Chat?
     @Published var isExpanded = true {
-        didSet { if isExpanded { dismissBubble() } else { controlTail = Self.controlPage } }
+        didSet {
+            if isExpanded { dismissBubble() } else { controlTail = Self.controlPage }
+            sendWatchGap()
+        }
     }
     /// The thought bubble beside the collapsed head.
     @Published private(set) var bubble: EdgeBubble?
@@ -52,12 +55,26 @@ final class Store: ObservableObject {
     @Published var controlMessages: [AgentMessage] = []
     @Published private(set) var controlTimeline: [ControlEntry] = []
     /// How many timeline entries a refresh reads; "Earlier activity" raises it.
-    @Published private(set) var controlTail = Store.controlPage
+    @Published private(set) var controlTail = Store.controlPage {
+        didSet { if controlTail != oldValue { controlWatch?.send("tail \(controlTail)") } }
+    }
+    /// The live Paseo connection for the seat (ADR 0009); nil while it restarts, when the
+    /// one-shot read every third poll takes over.
+    private var controlWatch: ChildStream?
+    private var watchGeneration = 0
+    private var watchFailures = 0
+    private var watchRestart: Task<Void, Never>?
+    private var started = false
     nonisolated static let controlPage = 80
     nonisolated static let controlMaxTail = 400
     private var controlServerId: String?
     /// Leaving Control drops back to the short tail, so a collapsed panel polls little.
-    @Published var controlOpen = false { didSet { if !controlOpen { controlTail = Self.controlPage } } }
+    @Published var controlOpen = false {
+        didSet {
+            if !controlOpen { controlTail = Self.controlPage }
+            sendWatchGap()
+        }
+    }
     @Published var controlBusy = false
     @Published var controlSending = false
     @Published var controlDraft = "" { didSet { saveDrafts() } }
@@ -170,6 +187,8 @@ final class Store: ObservableObject {
 
     func start() {
         guard !isDemo else { return }
+        started = true
+        startControlWatch()
         startPolling()
         Task {
             if tokens.tokens != nil {
@@ -198,7 +217,7 @@ final class Store: ObservableObject {
         guard !isDemo else { return }
         tickCount += 1
         // A slow Control read must never hold up Lark polling.
-        if controlSeat != nil, tickCount % 3 == 1, !controlBusy { Task { await refreshControl() } }
+        if controlSeat != nil, controlWatch == nil, tickCount % 3 == 1, !controlBusy { Task { await refreshControl() } }
         guard auth == .signedIn else { return }
         if tickCount % 6 == 1 {
             await loadChats(reset: true, quiet: true)
@@ -896,6 +915,7 @@ final class Store: ObservableObject {
         controlTail = Self.controlPage
         controlServerId = nil
         controlSeat = seat
+        startControlWatch()
         if seat == nil { asks = .off }
         // Older builds stored "Needs you" as a cue; it is live state now.
         controlAttention = seat.flatMap { UserDefaults.standard.string(forKey: "controlAttention.\($0.agentId)") }
@@ -1025,7 +1045,9 @@ final class Store: ObservableObject {
         }
     }
 
+    /// Asks the live connection for a fresh reading, or reads once while it is down.
     func refreshControl() async {
+        if let controlWatch { controlWatch.send("refresh"); return }
         guard !isDemo, let seat = controlSeat, !controlBusy else { return }
         controlBusy = true
         defer { controlBusy = false }
@@ -1034,53 +1056,148 @@ final class Store: ObservableObject {
             let (current, reading) = try await provider.readFollowing(seat, tail: controlTail, state: stateFile)
             guard controlSeat == seat else { return }
             if current != seat { adoptSeat(current) }
-            let sent = Set(UserDefaults.standard.stringArray(forKey: "controlSent") ?? [])
-            let messages = reading.messages.map { message -> AgentMessage in
-                var message = message
-                message.sentHere = message.role == "user" && sent.contains(Self.sentKey(message.text))
-                return message
-            }
-            controlStatus = reading.status
-            controlActivity = reading.activity
-            controlHasOlder = reading.hasOlder
-            controlNeedsInput = reading.needsInput
-            asks = reading.asks
-            controlPermissions = reading.permissions
-            controlServerId = reading.serverId ?? controlServerId
-            reconcileNeeds(permissions: Set(reading.permissions.map(\.id)), asks: reading.asks)
-            for permission in reading.permissions where !seenPermissions.contains(permission.id) {
-                needArrival(id: "permission-\(permission.id)", text: permission.summary)
-            }
-            for ask in asks.asks where !seenAsks.contains(ask.id) {
-                needArrival(id: "ask-\(ask.id)", text: UpdateText.short(ask.title.isEmpty ? ask.question : ask.title, limit: 90))
-                await Notifications.shared.post(title: "Needs you" + (ask.plan.isEmpty ? "" : " · \(ask.plan)"),
-                    body: UpdateText.short(ask.title.isEmpty ? ask.question : ask.title, limit: 120),
-                    id: "ask-\(ask.id)", destination: "control")
-            }
-            let event = attention.observe(status: reading.status, needsInput: reading.needsInput, messages: messages)
-            if event.reply != nil || (event.alert != nil && !reading.needsInput) {
-                controlAttention = event.alert ?? "New reply"
-            }
-            markControlRead()
-            if let alert = event.alert, controlAttention != nil || reading.needsInput {
-                let reply = messages.last(where: { $0.isAssistant })?.text ?? "Open Control to respond."
-                await Notifications.shared.post(title: "Control · \(alert)",
-                    body: reading.needsInput ? "Paseo is waiting for your permission." : UpdateText.short(reply, limit: 120),
-                    id: "control-\(current.agentId)-\(event.reply ?? alert)-\(alert)", destination: "control")
-            }
-            if !messages.isEmpty || controlMessages.isEmpty {
-                controlMessages = messages
-                let byId = Dictionary(messages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-                controlTimeline = reading.timeline.map { entry in
-                    guard let message = entry.message, let marked = byId[message.id] else { return entry }
-                    return .message(marked)
-                }
-            }
+            await applyControl(reading, seat: current)
         } catch {
             guard controlSeat == seat else { return }
-            controlStatus = "Connection unavailable"
-            controlActivity = nil
-            errorText = "Control: \(error.localizedDescription)"
+            controlUnavailable(error.localizedDescription)
+        }
+    }
+
+    private func controlUnavailable(_ reason: String) {
+        controlStatus = "Connection unavailable"
+        controlActivity = nil
+        errorText = "Control: \(reason)"
+    }
+
+    // MARK: - Live Paseo connection
+
+    private func startControlWatch() {
+        stopControlWatch()
+        guard started, !isDemo, let seat = controlSeat, seat.provider == "paseo" else { return }
+        let generation = watchGeneration
+        let current = { [weak self] in self?.watchGeneration == generation && self?.controlSeat == seat }
+        do {
+            controlWatch = try PaseoClient().watch(agentId: seat.agentId, host: seat.host, tail: controlTail,
+                onReading: { [weak self] reading in
+                    MainActor.assumeIsolated {
+                        guard let self, current() else { return }
+                        self.watchFailures = 0
+                        self.controlBusy = false
+                        if let moved = seat.following(reading.successor, state: self.stateFile) {
+                            self.adoptSeat(moved)
+                            return
+                        }
+                        self.enqueueControl(reading, seat: seat)
+                    }
+                },
+                onError: { [weak self] message in
+                    MainActor.assumeIsolated {
+                        guard let self, current() else { return }
+                        self.controlBusy = false
+                        self.controlUnavailable(message)
+                    }
+                },
+                onExit: { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self, current() else { return }
+                        self.controlWatch = nil
+                        self.controlBusy = false
+                        self.restartControlWatch()
+                    }
+                })
+            controlBusy = controlTimeline.isEmpty
+            sendWatchGap()
+        } catch {
+            restartControlWatch()
+        }
+    }
+
+    /// Readings apply one at a time and only the newest waiting one, so a slow apply (it posts
+    /// notifications) can never land after a newer reading.
+    private func enqueueControl(_ reading: AgentReading, seat: ControlSeat) {
+        pendingReading = (reading, seat)
+        guard !applyingReading else { return }
+        applyingReading = true
+        Task {
+            while let (next, seat) = pendingReading {
+                pendingReading = nil
+                if controlSeat == seat { await applyControl(next, seat: seat) }
+            }
+            applyingReading = false
+        }
+    }
+
+    private var pendingReading: (AgentReading, ControlSeat)?
+    private var applyingReading = false
+
+    /// Backs off 5 s, 10 s, 20 s… up to a minute; polling covers the gap.
+    private func restartControlWatch() {
+        watchFailures += 1
+        let delay = min(60, 5 * pow(2, Double(min(watchFailures, 6) - 1)))
+        let generation = watchGeneration
+        watchRestart = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.watchGeneration == generation else { return }
+            self.startControlWatch()
+        }
+    }
+
+    private func stopControlWatch() {
+        watchGeneration += 1
+        watchRestart?.cancel()
+        watchRestart = nil
+        controlWatch?.stop()
+        controlWatch = nil
+    }
+
+    /// Transcript changes reach an open Control within 3 s; elsewhere at most every 15 s.
+    /// Requests and finished turns are sent at once either way.
+    private func sendWatchGap() {
+        controlWatch?.send("gap \(controlOpen && isExpanded ? 3 : 15)")
+    }
+
+    private func applyControl(_ reading: AgentReading, seat current: ControlSeat) async {
+        let sent = Set(UserDefaults.standard.stringArray(forKey: "controlSent") ?? [])
+        let messages = reading.messages.map { message -> AgentMessage in
+            var message = message
+            message.sentHere = message.role == "user" && sent.contains(Self.sentKey(message.text))
+            return message
+        }
+        controlStatus = reading.status
+        controlActivity = reading.activity
+        controlHasOlder = reading.hasOlder
+        controlNeedsInput = reading.needsInput
+        asks = reading.asks
+        controlPermissions = reading.permissions
+        controlServerId = reading.serverId ?? controlServerId
+        reconcileNeeds(permissions: Set(reading.permissions.map(\.id)), asks: reading.asks)
+        for permission in reading.permissions where !seenPermissions.contains(permission.id) {
+            needArrival(id: "permission-\(permission.id)", text: permission.summary)
+        }
+        for ask in asks.asks where !seenAsks.contains(ask.id) {
+            needArrival(id: "ask-\(ask.id)", text: UpdateText.short(ask.title.isEmpty ? ask.question : ask.title, limit: 90))
+            await Notifications.shared.post(title: "Needs you" + (ask.plan.isEmpty ? "" : " · \(ask.plan)"),
+                body: UpdateText.short(ask.title.isEmpty ? ask.question : ask.title, limit: 120),
+                id: "ask-\(ask.id)", destination: "control")
+        }
+        let event = attention.observe(status: reading.status, needsInput: reading.needsInput, messages: messages)
+        if event.reply != nil || (event.alert != nil && !reading.needsInput) {
+            controlAttention = event.alert ?? "New reply"
+        }
+        markControlRead()
+        if let alert = event.alert, controlAttention != nil || reading.needsInput {
+            let reply = messages.last(where: { $0.isAssistant })?.text ?? "Open Control to respond."
+            await Notifications.shared.post(title: "Control · \(alert)",
+                body: reading.needsInput ? "Paseo is waiting for your permission." : UpdateText.short(reply, limit: 120),
+                id: "control-\(current.agentId)-\(event.reply ?? alert)-\(alert)", destination: "control")
+        }
+        if !messages.isEmpty || controlMessages.isEmpty {
+            controlMessages = messages
+            let byId = Dictionary(messages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            controlTimeline = reading.timeline.map { entry in
+                guard let message = entry.message, let marked = byId[message.id] else { return entry }
+                return .message(marked)
+            }
         }
     }
 

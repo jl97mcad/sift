@@ -46,6 +46,26 @@ final class ChildProcessTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count, before)
     }
 
+    func testAStreamTradesLinesAndStopEndsTheWholeGroup() async throws {
+        final class Box: @unchecked Sendable { var lines: [String] = []; var status: Int32? }
+        let box = Box()
+        let replied = expectation(description: "reply"), ended = expectation(description: "exit")
+        // A child that answers each line and keeps a grandchild that ignores SIGTERM.
+        let stream = try ChildStream("/bin/sh", ["-c", "(trap '' TERM; sleep 30) & echo child $!; while read l; do echo \"got $l\"; done"],
+            environment: [:], onLine: { line in
+                box.lines.append(String(decoding: line, as: UTF8.self))
+                if box.lines.contains("got ping") { replied.fulfill() }
+            }, onExit: { status in box.status = status; ended.fulfill() })
+        stream.send("ping")
+        await fulfillment(of: [replied], timeout: 5)
+        let grandchild = try XCTUnwrap(box.lines.first.flatMap { pid_t($0.dropFirst(6)) })
+        stream.stop()
+        await fulfillment(of: [ended], timeout: 5)
+        try await Task.sleep(nanoseconds: 1_300_000_000)
+        XCTAssertNotEqual(kill(grandchild, 0), 0, "the grandchild outlived the stream")
+        stream.send("after stop")  // must not crash or raise SIGPIPE
+    }
+
     func testAnUnwaitableChildIsNeverSignalledOrGivenAStatus() async throws {
         XCTAssertTrue(ChildProcess.childrenAreWaitable())
         // A pid that is not our child: no confirmed exit, so no group signal and no reap may follow.

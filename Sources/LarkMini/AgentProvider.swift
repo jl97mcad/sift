@@ -37,13 +37,20 @@ extension AgentProvider {
     /// unambiguous successor on the same host. A seat changed meanwhile is left alone.
     func readFollowing(_ seat: ControlSeat, tail: Int, state: StateFile = .shared) async throws -> (ControlSeat, AgentReading) {
         let reading = try await read(id: seat.agentId, host: seat.host, tail: tail)
-        guard let next = reading.successor else { return (seat, reading) }
-        var moved = seat
+        guard let moved = seat.following(reading.successor, state: state) else { return (seat, reading) }
+        return (moved, try await read(id: moved.agentId, host: moved.host, tail: tail))
+    }
+}
+
+extension ControlSeat {
+    /// The seat moved to a handoff successor, saved only if the shared seat is still this one.
+    func following(_ next: ControlOption?, state: StateFile) -> ControlSeat? {
+        guard let next else { return nil }
+        var moved = self
         moved.agentId = next.id
         moved.title = next.name
-        let saved = state.update { if $0.control == seat { $0.control = moved } }
-        guard saved.control == moved else { return (seat, reading) }
-        return (moved, try await read(id: moved.agentId, host: moved.host, tail: tail))
+        let saved = state.update { if $0.control == self { $0.control = moved } }
+        return saved.control == moved ? moved : nil
     }
 }
 
