@@ -15,7 +15,7 @@ final class Store: ObservableObject {
     @Published private(set) var me: Me?
     @Published var openChat: Chat?
     @Published var isExpanded = true {
-        didSet { if isExpanded { dismissBubble() } }
+        didSet { if isExpanded { dismissBubble() } else { controlTail = Self.controlPage } }
     }
     /// The thought bubble beside the collapsed head.
     @Published private(set) var bubble: EdgeBubble?
@@ -50,7 +50,14 @@ final class Store: ObservableObject {
     private var directory: [Chat] = []
     @Published var controlSeat: ControlSeat?
     @Published var controlMessages: [AgentMessage] = []
-    @Published var controlOpen = false
+    @Published private(set) var controlTimeline: [ControlEntry] = []
+    /// How many timeline entries a refresh reads; "Earlier activity" raises it.
+    @Published private(set) var controlTail = Store.controlPage
+    static let controlPage = 80
+    static let controlMaxTail = 400
+    private var controlServerId: String?
+    /// Leaving Control drops back to the short tail, so a collapsed panel polls little.
+    @Published var controlOpen = false { didSet { if !controlOpen { controlTail = Self.controlPage } } }
     @Published var controlBusy = false
     @Published var controlSending = false
     @Published var controlDraft = "" { didSet { saveDrafts() } }
@@ -73,6 +80,8 @@ final class Store: ObservableObject {
 
     /// Live needs-you: Paseo is waiting on a permission, or the Control's runner has an open ask.
     var openAskCount: Int { asks.asks.count }
+    /// Open asks plus pending Paseo requests: everything listed at the top of Control.
+    var openNeedCount: Int { openAskCount + controlPermissions.count }
     /// Pulses until seen, then goes quiet like a read reply; open asks stay listed in Control.
     var needsYouUnseen: Bool {
         controlPermissions.contains { !seenPermissions.contains($0.id) } || asks.asks.contains { !seenAsks.contains($0.id) }
@@ -415,12 +424,7 @@ final class Store: ObservableObject {
     nonisolated private static func previewText(for message: ChatMessage) -> String {
         let body: String
         switch message.type {
-        case "text": body = message.text
-        case "image": body = "Photo"
         case "file": body = message.fileName ?? "File"
-        case "audio": body = "Voice message"
-        case "media": body = "Video"
-        case "sticker": body = "Sticker"
         case "interactive": body = "Card"
         default: body = message.text
         }
@@ -706,20 +710,32 @@ final class Store: ObservableObject {
         }
     }
 
+    /// New messages join; loaded ones are replaced when Lark reports an edit, recall or card update.
+    // ponytail: only the newest 20 are rechecked each tick; older rows refresh when the chat reopens.
     private func refreshOpenChat(_ chat: Chat) async {
-        guard let page = try? await api.messages(chatId: chat.id, pageSize: 20) else { return }
-        var current = messages[chat.id] ?? []
-        let known = Set(current.map(\.id))
-        let fresh = page.messages.filter { !known.contains($0.id) }
-        guard !fresh.isEmpty else { return }
-        current.append(contentsOf: fresh)
-        current.sort { $0.ts < $1.ts }
+        guard let page = try? await api.messages(chatId: chat.id, pageSize: 20),
+              let current = Self.merge(messages[chat.id] ?? [], page.messages) else { return }
         messages[chat.id] = current
         if let last = current.last {
             previews[chat.id] = Preview(text: Self.previewText(for: last), ts: last.ts,
                                         messageId: last.id, fromMe: last.isMine)
         }
         if openChat?.id == chat.id, isVisible(chat) { markRead(chat) }
+    }
+
+    /// Loaded rows plus a fresh page: changed rows replaced in place, new ones added in time
+    /// order. nil when nothing changed, so an unchanged poll publishes nothing.
+    nonisolated static func merge(_ loaded: [ChatMessage], _ page: [ChatMessage]) -> [ChatMessage]? {
+        var current = loaded
+        let index = Dictionary(current.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var changed = false
+        for message in page {
+            if let at = index[message.id] {
+                if current[at] != message { current[at] = message; changed = true }
+            } else { current.append(message); changed = true }
+        }
+        guard changed else { return nil }
+        return current.sorted { $0.ts < $1.ts }
     }
 
     /// Collapsed panels still poll; they must not consume unread state.
@@ -821,6 +837,16 @@ final class Store: ObservableObject {
         return try? await api.imageData(messageId: message.id, key: key)
     }
 
+    /// The messages inside a forwarded bundle, read when the person opens it.
+    func forwarded(_ message: ChatMessage) async throws -> [ChatMessage] {
+        guard !isDemo else { return [] }
+        return try await api.forwarded(messageId: message.id, chatId: message.chatId)
+    }
+
+    func chatName(_ id: String) -> String? {
+        (chats.first { $0.id == id } ?? directory.first { $0.id == id })?.displayName
+    }
+
     func saveFile(_ message: ChatMessage, to destination: URL) async throws {
         guard !isDemo else { throw APIError(status: 0, message: "Demo files cannot be downloaded.") }
         guard let key = message.fileKey else { throw APIError(status: 0, message: "File resource is unavailable.") }
@@ -866,6 +892,9 @@ final class Store: ObservableObject {
         controlPermissions = []
         controlHasOlder = false
         controlMessages = []
+        controlTimeline = []
+        controlTail = Self.controlPage
+        controlServerId = nil
         controlSeat = seat
         if seat == nil { asks = .off }
         // Older builds stored "Needs you" as a cue; it is live state now.
@@ -884,6 +913,27 @@ final class Store: ObservableObject {
 
     func closeControl() {
         controlOpen = false
+    }
+
+    var canLoadEarlierControl: Bool { controlHasOlder && controlTail < Self.controlMaxTail }
+
+    // ponytail: a longer tail per refresh, not cursor paging; the SDK connection (D) pages properly.
+    func loadEarlierControl() async {
+        guard canLoadEarlierControl else { return }
+        controlTail = min(Self.controlMaxTail, controlTail + Self.controlPage)
+        await refreshControl()
+    }
+
+    /// Opens this Control session in the Paseo app, where requests are answered.
+    func openInPaseo() {
+        guard let seat = controlSeat else { return }
+        let segment = { (value: String) in value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(.init(charactersIn: "/"))) ?? value }
+        if let server = controlServerId, let url = URL(string: "paseo://h/\(segment(server))/agent/\(segment(seat.agentId))"),
+           NSWorkspace.shared.open(url) { return }
+        if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "sh.paseo.desktop")
+            ?? URL(string: "file:///Applications/Paseo.app") {
+            NSWorkspace.shared.openApplication(at: app, configuration: .init())
+        }
     }
 
     func markControlRead() {
@@ -972,7 +1022,7 @@ final class Store: ObservableObject {
         defer { controlBusy = false }
         let provider = AgentProviders.resolve(seat.provider)
         do {
-            let (current, reading) = try await provider.readFollowing(seat, tail: 80, state: stateFile)
+            let (current, reading) = try await provider.readFollowing(seat, tail: controlTail, state: stateFile)
             guard controlSeat == seat else { return }
             if current != seat { adoptSeat(current) }
             let sent = Set(UserDefaults.standard.stringArray(forKey: "controlSent") ?? [])
@@ -987,10 +1037,10 @@ final class Store: ObservableObject {
             controlNeedsInput = reading.needsInput
             asks = reading.asks
             controlPermissions = reading.permissions
+            controlServerId = reading.serverId ?? controlServerId
             reconcileNeeds(permissions: Set(reading.permissions.map(\.id)), asks: reading.asks)
             for permission in reading.permissions where !seenPermissions.contains(permission.id) {
-                needArrival(id: "permission-\(permission.id)",
-                            text: permission.title.isEmpty ? "Waiting for your permission in Paseo" : permission.title)
+                needArrival(id: "permission-\(permission.id)", text: permission.summary)
             }
             for ask in asks.asks where !seenAsks.contains(ask.id) {
                 needArrival(id: "ask-\(ask.id)", text: UpdateText.short(ask.title.isEmpty ? ask.question : ask.title, limit: 90))
@@ -1009,7 +1059,14 @@ final class Store: ObservableObject {
                     body: reading.needsInput ? "Paseo is waiting for your permission." : UpdateText.short(reply, limit: 120),
                     id: "control-\(current.agentId)-\(event.reply ?? alert)-\(alert)", destination: "control")
             }
-            if !messages.isEmpty || controlMessages.isEmpty { controlMessages = messages }
+            if !messages.isEmpty || controlMessages.isEmpty {
+                controlMessages = messages
+                let byId = Dictionary(messages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                controlTimeline = reading.timeline.map { entry in
+                    guard let message = entry.message, let marked = byId[message.id] else { return entry }
+                    return .message(marked)
+                }
+            }
         } catch {
             guard controlSeat == seat else { return }
             controlStatus = "Connection unavailable"
@@ -1099,6 +1156,26 @@ final class Store: ObservableObject {
                 store.messages[chat.id] = []
             }
         }
+        // Group chat: replies, edits, voice, video, stickers, forwards and a type Sift cannot draw.
+        let design = { (id: String, sender: String, type: String, text: String, at: Int64) in
+            ChatMessage(id: id, chatId: "c3", type: type, text: text, ts: minute + at,
+                        sender: Sender(id: sender, name: "", isMe: sender == "me"), imageKey: nil, fileKey: nil, fileName: nil, deleted: false)
+        }
+        store.memberNames = ["u-riley": "Riley Chen", "u-sam": "Sam Patel"]
+        var reply = design("g2", "u-sam", "text", "Love the new set. Ship them Friday?", 61_000)
+        reply.parentId = "g1"
+        var edited = design("g3", "me", "text", "Friday works, I'll update the build.", 122_000)
+        edited.parentId = "g2"
+        edited.edited = true
+        var voice = design("g4", "u-riley", "audio", "Voice message", 183_000)
+        voice.media = .audio(seconds: 14)
+        var forward = design("g5", "u-sam", "merge_forward", "Forwarded messages", 244_000)
+        forward.media = .forward
+        var sticker = design("g6", "u-riley", "sticker", "Sticker", 245_000)
+        sticker.media = .sticker
+        var event = design("m3", "u-riley", "share_calendar_event", "Calendar event · Icon review", 306_000)
+        event.media = .other(type: "share_calendar_event")
+        store.messages["c3"] = [design("g1", "u-riley", "text", "New dock icons are up", 0), reply, edited, voice, forward, sticker, event]
         store.controlSeat = ControlSeat(agentId: "7b389a28-demo", title: "Control")
         store.controlStatus = "idle"
         store.asks = .available(needsYou ? [OpenAsk(id: "a1", plan: "ALT-12", title: "Publish the release notes",
@@ -1109,6 +1186,25 @@ final class Store: ObservableObject {
             AgentMessage(id: "control-wait:demo:receipt", role: "user", text: "Control wait receipt ALT-12: the release check finished.", ts: now - 200_000),
             AgentMessage(id: "p2", role: "assistant", text: "## Release notes are ready\n\nThe notes and changelog are ready for review.\n\n- **Changed:** grouped messages and a smaller composer.\n- **Checked:** the focused tests passed.\n- **Needs you:** choose when to publish.\n\n[Open the review](https://example.com/review)", ts: now - 180_000)
         ]
+        let work = [
+            AgentStep(id: "s1", kind: "reasoning", title: "Thought", detail: "Check the changelog against the merged PRs."),
+            AgentStep(id: "s2", kind: "shell", title: "Ran a command", target: "git log --oneline -5", status: "completed",
+                      detail: "a1b2c3d Group messages\n9f8e7d6 Smaller composer"),
+            AgentStep(id: "s3", kind: "edit", title: "Edited a file", target: "docs/release-notes.md", status: "completed",
+                      detail: "+ Grouped messages and a smaller composer."),
+            AgentStep(id: "s4", kind: "todo", title: "Checklist", target: "2 of 3 done", todos: [
+                .init(text: "Draft the notes", status: "completed"), .init(text: "Check the changelog", status: "completed"),
+                .init(text: "Publish", status: "in_progress")])]
+        let messages = store.controlMessages
+        store.controlTimeline = [.message(messages[0]), .message(messages[1]), .work(id: "work-s1", steps: work),
+                                 .notice(id: "n1", level: "warning", text: "Context is 90% full; Paseo will compact soon.", ts: nil),
+                                 .message(messages[2])]
+        if needsYou {
+            store.controlPermissions = [PermissionRequest(id: "p1", title: "Publish the release notes", kind: "tool", name: "Bash",
+                description: "Runs the publish script for the release notes.", detail: "./scripts/publish-notes --channel release",
+                actions: ["Allow", "Deny"])]
+            store.controlNeedsInput = true
+        }
         store.openChat = nil
         store.settings.panelWidth = 400
         return store

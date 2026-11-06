@@ -111,6 +111,16 @@ struct ChatMessage: Identifiable, Equatable {
     let fileKey: String?
     let fileName: String?
     let deleted: Bool
+    /// The message this one replies to, and its thread in topic chats.
+    var parentId: String? = nil
+    var threadId: String? = nil
+    var edited = false
+    /// Sent by a bot or app, which has no member name.
+    var fromApp = false
+    /// Content beyond text, image and file; nil for those.
+    var media: LarkMedia? = nil
+    /// Images embedded in a post or card, shown under its text.
+    var imageKeys: [String] = []
 
     var isMine: Bool { sender.isMe }
 
@@ -119,6 +129,25 @@ struct ChatMessage: Identifiable, Equatable {
               sender.id == other.sender.id, isMine == other.isMine,
               type != "system", other.type != "system" else { return false }
         return ts / 60_000 == other.ts / 60_000
+    }
+}
+
+/// Lark message content that is neither text nor a plain image or file. Voice and video keep
+/// their file key in `fileKey`, so they save like files.
+enum LarkMedia: Equatable {
+    case audio(seconds: Int)
+    case video(cover: String?, seconds: Int)
+    /// Lark's resource API does not serve stickers to apps.
+    case sticker
+    case sharedChat(id: String)
+    case contact(id: String)
+    /// Merged-and-forwarded messages, fetched when opened.
+    case forward
+    /// A type Sift has no view for (calendar, task, poll, location…): named and opened in Lark.
+    case other(type: String)
+
+    static func duration(_ seconds: Int) -> String {
+        seconds > 0 ? String(format: "%d:%02d", seconds / 60, seconds % 60) : ""
     }
 }
 

@@ -323,6 +323,14 @@ actor LarkAPI {
         return (Array(parsed), hasMore ? data["page_token"] as? String : nil)
     }
 
+    /// The messages inside a merged-and-forwarded message: Lark returns the container, then its children.
+    func forwarded(messageId: String, chatId: String) async throws -> [ChatMessage] {
+        let data = try await request("open-apis/im/v1/messages/\(messageId)", query: [.init(name: "user_id_type", value: "open_id")])
+        let items = data["items"] as? [[String: Any]] ?? []
+        return items.filter { $0["upper_message_id"] as? String == messageId }
+            .compactMap { Self.parseMessage($0, chatId: chatId, meId: meOpenId) }
+    }
+
     func latestMessage(chatId: String) async throws -> ChatMessage? {
         let page = try await messages(chatId: chatId, pageSize: 1)
         return page.messages.last
@@ -500,6 +508,8 @@ actor LarkAPI {
         var imageKey: String?
         var fileKey: String?
         var fileName: String?
+        var media: LarkMedia?
+        let seconds = Int((content["duration"] as? NSNumber)?.doubleValue ?? 0) / 1000
         switch type {
         case "text":
             text = content["text"] as? String ?? ""
@@ -508,29 +518,41 @@ actor LarkAPI {
         case "image":
             imageKey = content["image_key"] as? String
             text = "Photo"
-        case "file":
-            fileKey = content["file_key"] as? String
+        case "file", "folder":
+            fileKey = type == "file" ? content["file_key"] as? String : nil
             fileName = content["file_name"] as? String
-            text = fileName ?? "File"
+            text = fileName ?? (type == "file" ? "File" : "Folder")
+            if type == "folder" { media = .other(type: type) }
         case "audio":
+            fileKey = content["file_key"] as? String
+            fileName = "Voice message \(id.suffix(6)).opus"
+            media = .audio(seconds: seconds)
             text = "Voice message"
         case "media":
+            fileKey = content["file_key"] as? String
+            fileName = content["file_name"] as? String ?? "Video \(id.suffix(6)).mp4"
+            media = .video(cover: content["image_key"] as? String, seconds: seconds)
             text = "Video"
         case "sticker":
+            media = .sticker
             text = "Sticker"
         case "interactive":
             text = Self.flattenRich(content, rows: "elements")
             if text.isEmpty { text = "Card · open it in Lark" }
         case "share_chat":
-            text = "Shared chat"
+            media = .sharedChat(id: content["chat_id"] as? String ?? "")
+            text = "Shared group"
         case "share_user":
-            text = "Contact"
+            media = .contact(id: content["user_id"] as? String ?? "")
+            text = "Contact card"
         case "merge_forward":
+            media = .forward
             text = "Forwarded messages"
         case "system":
-            text = content["text"] as? String ?? "System message"
+            text = Self.systemText(content)
         default:
-            text = "[\(type)]"
+            media = .other(type: type)
+            text = Self.otherText(type: type, content: content)
         }
         // Longest keys first, so @_user_1 never rewrites part of @_user_10.
         for (key, name) in mentionNames.sorted(by: { $0.key.count > $1.key.count }) {
@@ -538,6 +560,7 @@ actor LarkAPI {
         }
         text = text.replacingOccurrences(of: "@_all", with: "@all")
         let name = senderId == meId ? "You" : ""
+        let nonEmpty = { (key: String) in (raw[key] as? String).flatMap { $0.isEmpty ? nil : $0 } }
         return ChatMessage(
             id: id,
             chatId: chatId,
@@ -548,8 +571,48 @@ actor LarkAPI {
             imageKey: imageKey,
             fileKey: fileKey,
             fileName: fileName,
-            deleted: raw["deleted"] as? Bool ?? false
+            deleted: raw["deleted"] as? Bool ?? false,
+            parentId: nonEmpty("parent_id"),
+            threadId: nonEmpty("thread_id"),
+            edited: raw["updated"] as? Bool ?? false,
+            fromApp: senderDict["sender_type"] as? String == "app",
+            media: media,
+            imageKeys: ["post", "interactive"].contains(type) ? Self.embeddedImages(content) : []
         )
+    }
+
+    /// System events come as a template with named parts: "{from_user} invited {to_chatters}".
+    static func systemText(_ content: [String: Any]) -> String {
+        guard var text = content["template"] as? String ?? content["text"] as? String else { return "System message" }
+        for (key, value) in content where key != "template" {
+            let names = (value as? [String]) ?? (value as? String).map { [$0] } ?? []
+            text = text.replacingOccurrences(of: "{\(key)}", with: names.joined(separator: ", "))
+        }
+        return text.replacingOccurrences(of: #"\{[a-z_]+\}"#, with: "someone", options: .regularExpression)
+    }
+
+    /// Types Sift has no view for keep a name and their own summary, if any.
+    static func otherText(type: String, content: [String: Any]) -> String {
+        let labels = ["share_calendar_event": "Calendar event", "calendar": "Calendar invitation",
+                      "general_calendar": "Calendar event", "todo": "Task", "vote": "Poll", "location": "Location",
+                      "video_chat": "Video meeting", "hongbao": "Red packet", "share_doc": "Document"]
+        let label = labels[type] ?? type.replacingOccurrences(of: "_", with: " ").capitalized
+        let summary = (content["summary"] as? [String: Any])?["title"] as? String
+            ?? ["summary", "topic", "title", "name", "text"].lazy.compactMap { content[$0] as? String }.first { !$0.isEmpty }
+        var parts = [label]
+        if let summary, !summary.isEmpty { parts.append(summary) }
+        if let start = Int64(content["start_time"] as? String ?? ""), start > 0 { parts.append(TimeFormat.short(start)) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// Image keys inside a post or card, in order, at any depth.
+    static func embeddedImages(_ value: Any) -> [String] {
+        if let object = value as? [String: Any] {
+            let own = object["tag"] as? String == "img" ? [object["image_key"] as? String].compactMap { $0 } : []
+            return own + object.keys.sorted().flatMap { $0 == "image_key" ? [] : embeddedImages(object[$0]!) }
+        }
+        if let list = value as? [Any] { return list.flatMap(embeddedImages) }
+        return []
     }
 
     /// Lark's read API returns posts as `{title, content: [[element]]}` and cards in a reduced
@@ -592,6 +655,8 @@ actor LarkAPI {
         case "button", "select_static", "select_person", "multi_select_static", "multi_select_person",
              "overflow", "date_picker", "picker_time", "picker_datetime", "input", "checker":
             controls = true
+            let target = element["url"] as? String ?? (element["multi_url"] as? [String: Any])?["url"] as? String ?? ""
+            if !text.isEmpty, target.hasPrefix("http") { return "[\(text)] (\(target)) " }
             return text.isEmpty ? "" : "[\(text)] "
         default: return text
         }

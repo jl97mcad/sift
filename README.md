@@ -18,14 +18,20 @@ automate the Lark desktop client.
 - **Inbox and All chats.** Unread activity first, with previews, mute and
   mark-read. All chats pages through your full chat list.
 - **Pinned chats.** Up to ten in the rail (⌘1–9). Drag to reorder.
-- **Conversations.** Text, rich posts with links and mentions, card text,
-  images and files (saved through the authenticated Lark resource API).
-  Messages from one sender in the same minute group together.
+- **Conversations.** Text, rich posts with links, mentions and images, card
+  text, images (open, save, copy), files, voice and video (saved through the
+  authenticated Lark resource API), shared chats and contacts, forwarded
+  bundles and system events. Replies quote their parent; edits, recalls,
+  threads and bots are marked. Messages from one sender in the same minute
+  group together.
 - **Control seat (optional).** Talk to a Paseo agent session from the panel:
-  readable replies with Markdown, named speakers, a live activity row, and
+  readable replies with Markdown, named speakers, a live activity row, the
+  work between replies (commands, edits, checklists, failures) folded into
+  one line that opens to each step, visible errors and notifications, and
   names of Lark people and groups linked to their chats.
 - **Needs you.** The head pulses for an open ask from your Control's runner
-  or a Paseo permission request, until you have seen it.
+  or a Paseo request (permission, plan, question), until you have seen it.
+  Each request shows what it asks and opens in Paseo to answer.
 - **Notifications (opt-in).** Optional macOS banners and sound, never while
   the panel is focused.
 
@@ -95,8 +101,9 @@ sift control status
 ```
 
 Or use Settings → Control seat. Sift sends with `paseo send` and reads a
-bounded, typed timeline through the installed Paseo app's own client: prompts
-and replies only, never reasoning or tool output. When a handoff archives the
+bounded, typed timeline through the installed Paseo app's own client. Only
+prompts and replies show as messages; thoughts and tool steps show as labelled,
+collapsed work. When a handoff archives the
 seated session and exactly one live session on the same host carries its
 `seat` label, Sift follows it. Seats without a `seat` label never move.
 
@@ -147,8 +154,11 @@ Every command prints one JSON object and exits non-zero on failure.
 - The Control read depends on the Paseo desktop app's internal layout (0.14).
   A different version may fail visibly with "Paseo conversation data is
   unavailable".
-- Control history shows the latest 80 timeline entries; older history stays
-  in Paseo.
+- Control history shows the latest 80 timeline entries, up to 400 with
+  "Earlier activity"; older history stays in Paseo. Paseo artifacts are not
+  shown yet.
+- Stickers cannot be loaded (Lark does not serve them to apps); reactions need
+  a scope that is not requested; bold and italic in posts show as plain text.
 - Some people's pictures are not searchable and show initials.
 
 ## Development

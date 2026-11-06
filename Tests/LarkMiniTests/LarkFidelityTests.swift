@@ -38,4 +38,65 @@ final class LarkFidelityTests: XCTestCase {
         XCTAssertEqual(String(linked.characters), "**not bold** https://example.com/x")
         XCTAssertEqual(linked.runs.compactMap(\.link), [URL(string: "https://example.com/x")!])
     }
+
+    private func message(_ type: String, _ content: String, extra: [String: Any] = [:]) throws -> ChatMessage {
+        var raw: [String: Any] = ["message_id": "om_abcdef123", "msg_type": type, "create_time": "1000",
+                                  "body": ["content": content], "sender": ["id": "ou_x", "sender_type": "user"]]
+        raw.merge(extra) { _, new in new }
+        return try XCTUnwrap(LarkAPI.parseMessage(raw, chatId: "c", meId: "me"))
+    }
+
+    func testRepliesThreadsEditsAndBotsKeepTheirMetadata() throws {
+        let reply = try message("text", #"{"text":"yes"}"#, extra: ["parent_id": "om_parent", "root_id": "om_parent",
+            "thread_id": "omt_1", "updated": true, "sender": ["id": "cli_bot", "sender_type": "app"]])
+        XCTAssertEqual(reply.parentId, "om_parent")
+        XCTAssertEqual(reply.threadId, "omt_1")
+        XCTAssertTrue(reply.edited)
+        XCTAssertTrue(reply.fromApp)
+        let plain = try message("text", #"{"text":"hi"}"#, extra: ["parent_id": ""])
+        XCTAssertNil(plain.parentId)
+        XCTAssertFalse(plain.edited || plain.fromApp)
+    }
+
+    func testVoiceVideoAndStickersKeepWhatLarkGives() throws {
+        let voice = try message("audio", #"{"file_key":"file_a","duration":12500}"#)
+        XCTAssertEqual(voice.media, .audio(seconds: 12))
+        XCTAssertEqual(voice.fileKey, "file_a")
+        XCTAssertEqual(voice.fileName, "Voice message def123.opus")
+        let video = try message("media", #"{"file_key":"file_v","image_key":"img_c","file_name":"demo.mp4","duration":62000}"#)
+        XCTAssertEqual(video.media, .video(cover: "img_c", seconds: 62))
+        XCTAssertEqual(video.fileName, "demo.mp4")
+        XCTAssertEqual(LarkMedia.duration(62), "1:02")
+        XCTAssertEqual(try message("sticker", #"{"file_key":"s"}"#).media, .sticker)
+    }
+
+    func testSharesForwardsSystemAndUnknownTypesAreNamed() throws {
+        XCTAssertEqual(try message("share_chat", #"{"chat_id":"oc_1"}"#).media, .sharedChat(id: "oc_1"))
+        XCTAssertEqual(try message("share_user", #"{"user_id":"ou_2"}"#).media, .contact(id: "ou_2"))
+        XCTAssertEqual(try message("merge_forward", #"{"content":"Merged and Forwarded Message"}"#).media, .forward)
+        XCTAssertEqual(try message("system", #"{"template":"{from_user} invited {to_chatters} to this chat.","from_user":["Ana"],"to_chatters":["Ben","Kai"]}"#).text,
+                       "Ana invited Ben, Kai to this chat.")
+        XCTAssertEqual(try message("system", #"{"template":"{from_user} changed the name"}"#).text, "someone changed the name")
+        let event = try message("share_calendar_event", #"{"summary":"Launch review","start_time":"0"}"#)
+        XCTAssertEqual(event.media, .other(type: "share_calendar_event"))
+        XCTAssertEqual(event.text, "Calendar event · Launch review")
+        XCTAssertEqual(try message("new_kind", "{}").text, "New Kind")
+    }
+
+    func testPostsAndCardsKeepEmbeddedImagesAndButtonTargets() throws {
+        let post = try message("post", #"{"title":"","content":[[{"tag":"text","text":"Look"},{"tag":"img","image_key":"img_1"}],[{"tag":"img","image_key":"img_2"}]]}"#)
+        XCTAssertEqual(post.imageKeys, ["img_1", "img_2"])
+        let card: [String: Any] = ["elements": [[["tag": "button", "text": "Open PR", "url": "https://example.com/pr/1"]]]]
+        XCTAssertEqual(LarkAPI.flattenRich(card, rows: "elements"), "[Open PR] (https://example.com/pr/1) \nButtons on this card work in Lark.")
+    }
+
+    func testRefreshReplacesEditedRowsAndPublishesNothingWhenUnchanged() throws {
+        let first = try message("text", #"{"text":"draft"}"#)
+        let edited = try message("text", #"{"text":"final"}"#, extra: ["updated": true])
+        let later = try message("text", #"{"text":"next"}"#, extra: ["message_id": "om_2", "create_time": "2000"])
+        XCTAssertNil(Store.merge([first], [first]))
+        XCTAssertEqual(Store.merge([first], [edited, later])?.map(\.text), ["final", "next"])
+        let recalled = try message("text", #"{"text":"This message was recalled"}"#, extra: ["deleted": true])
+        XCTAssertEqual(Store.merge([first], [recalled])?.first?.deleted, true)
+    }
 }
