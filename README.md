@@ -1,0 +1,167 @@
+# Sift
+
+A small floating Lark companion for macOS. A green head rests at the right
+edge of the screen; click it for a compact panel with your unread Lark chats,
+pinned chats and, optionally, a conversation with a coding-agent "Control"
+session running in [Paseo](https://paseo.sh).
+
+Sift is a standalone app on Lark's public Open API. It does not patch, read or
+automate the Lark desktop client.
+
+![Sift inbox](docs/screenshots/inbox.png) ![Sift Control](docs/screenshots/control.png)
+
+## Features
+
+- **Edge head.** Rests at the right screen edge; ⌥Space or a click opens the
+  panel. Drag the panel's header to move it; drop it against the right edge to
+  dock it again. Reduce Motion stops every animation.
+- **Inbox and All chats.** Unread activity first, with previews, mute and
+  mark-read. All chats pages through your full chat list.
+- **Pinned chats.** Up to ten in the rail (⌘1–9). Drag to reorder.
+- **Conversations.** Text, rich posts with links and mentions, card text,
+  images and files (saved through the authenticated Lark resource API).
+  Messages from one sender in the same minute group together.
+- **Control seat (optional).** Talk to a Paseo agent session from the panel:
+  readable replies with Markdown, named speakers, a live activity row, and
+  names of Lark people and groups linked to their chats.
+- **Needs you.** The head pulses for an open ask from your Control's runner
+  or a Paseo permission request, until you have seen it.
+- **Notifications (opt-in).** Optional macOS banners and sound, never while
+  the panel is focused.
+
+## Requirements
+
+- macOS 14 or later, with the Xcode Command Line Tools (Swift 5.9+) to build.
+- A Lark account and a self-built Lark app in your tenant (see Setup).
+- Optional, for the Control seat: the Paseo desktop app (0.14) on the Mac and a
+  reachable Paseo daemon that runs your Control agent.
+- Optional, for open asks: a Control runner whose Paseo daemon runs the
+  `control-plugins` suite with its read-only `asks.open` RPC.
+
+## Install
+
+```bash
+git clone https://github.com/jl97mcad/sift.git
+cd sift
+./install.sh        # builds ~/Applications/Sift.app and ~/.local/bin/sift
+```
+
+Building from source avoids Gatekeeper prompts: release builds are signed
+ad hoc, not notarized. An agent can run the whole setup; see
+[AGENTS.md](AGENTS.md).
+
+## Setup
+
+1. Create a self-built app at <https://open.larksuite.com/app> and enable these
+   user scopes (an admin may need to approve them):
+
+   | Scope | Used for |
+   | --- | --- |
+   | `im:chat:read` | chat list and details |
+   | `im:message`, `im:message.send_as_user` | reading and sending as you |
+   | `im:message.p2p_msg:get_as_user`, `im:message.group_msg:get_as_user` | direct and group history |
+   | `im:chat.members:read` | sender names in groups |
+   | `im:resource` | images and files |
+   | `contact:user.base:readonly`, `contact:user:search` | names and direct-chat pictures |
+   | `offline_access` | staying signed in |
+
+2. Store the app credentials. The secret is read from stdin, never argv:
+
+   ```bash
+   printf '%s' "$APP_SECRET" | sift setup --app-id cli_xxxxxxxx --app-secret -
+   ```
+
+3. Sign in with Lark's device flow:
+
+   ```bash
+   sift login --no-wait            # prints a code and a URL to approve
+   sift login --device-code CODE   # after approving in the browser
+   ```
+
+   Or press "Sign in with Lark" in the app.
+
+4. Check it:
+
+   ```bash
+   sift doctor
+   sift chats --limit 5
+   ```
+
+### Control seat (optional)
+
+```bash
+sift control set --agent-id <paseo-agent-id> --host tcp://<daemon-host>:<port>
+sift control status
+```
+
+Or use Settings → Control seat. Sift sends with `paseo send` and reads a
+bounded, typed timeline through the installed Paseo app's own client: prompts
+and replies only, never reasoning or tool output. When a handoff archives the
+seated session and exactly one live session on the same host carries its
+`seat` label, Sift follows it. Seats without a `seat` label never move.
+
+Open asks come from the same daemon, through `control-plugins`' read-only
+`asks.open` call. Without that suite, asks are off; if the read fails, Sift
+says the state is unknown rather than showing none.
+
+## CLI
+
+Every command prints one JSON object and exits non-zero on failure.
+
+| Command | Purpose |
+| --- | --- |
+| `sift setup --app-id ID --app-secret -` | store app credentials |
+| `sift bootstrap --app-id ID [--agent-id ID --host H]` | credentials + sign-in code (+ seat) on a fresh Mac |
+| `sift login [--no-wait] [--device-code CODE]` | device-flow sign-in |
+| `sift status` / `sift doctor` | sign-in state; credential, token and chat checks |
+| `sift chats [--limit N]` | chat list |
+| `sift messages --chat-id ID [--limit N]` | one chat's history |
+| `sift pins list \| add <chat_id> \| add --name "Room" \| remove <chat_id> \| clear` | pinned chats |
+| `sift control set \| status \| send "text" \| logs [--tail N] \| digest \| asks \| off` | Control seat |
+| `sift selftest` / `sift open` / `sift logout` | geometry self-test; open the app; forget the session |
+
+## Privacy and data
+
+- Everything stays on your Mac, in `~/Library/Application Support/Sift/`:
+  `credentials.json` (app secret and tokens), `state.json` (pins, settings,
+  Control seat) and `cache.json` (chat list and previews), each mode 0600.
+  Device-only preferences use macOS user defaults.
+- Sift talks only to Lark's Open API and, if you set a Control seat, to that
+  Paseo daemon. There is no telemetry and no third-party service.
+- Notifications are off until you enable them.
+
+## How it works
+
+- Lark has no push channel for personal messages, so Sift polls: pinned chats
+  every few seconds, the chat list about every 30 seconds, and the open chat
+  every tick. The interval is configurable.
+- The API has no unread counter. Sift remembers the last message it showed per
+  chat and marks newer messages from other people as unread.
+- Direct chats list no picture and the contact profile endpoint may refuse a
+  user token, so pictures come from user search, matched on the exact person.
+  Otherwise initials show.
+
+## Known limits
+
+- Reads trail the native client by a few seconds.
+- The Control read depends on the Paseo desktop app's internal layout (0.14).
+  A different version may fail visibly with "Paseo conversation data is
+  unavailable".
+- Control history shows the latest 80 timeline entries; older history stays
+  in Paseo.
+- Some people's pictures are not searchable and show initials.
+
+## Development
+
+```bash
+swift build
+CFFIXED_USER_HOME="$PWD/dist/test-home" swift test   # tests need an isolated home
+.build/debug/LarkMini --cli selftest
+make demo                # app with fixture data; no credentials, no network
+make app                 # dist/Sift.app
+make dmg                 # dist/Sift.dmg
+```
+
+`open dist/Sift.app --args --demo` accepts `--demo-chat`, `--demo-control`,
+`--demo-needs-you` and `--demo-search`. Design decisions are recorded in
+[docs/decisions](docs/decisions).
