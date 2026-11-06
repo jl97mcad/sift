@@ -53,8 +53,8 @@ final class Store: ObservableObject {
     @Published private(set) var controlTimeline: [ControlEntry] = []
     /// How many timeline entries a refresh reads; "Earlier activity" raises it.
     @Published private(set) var controlTail = Store.controlPage
-    static let controlPage = 80
-    static let controlMaxTail = 400
+    nonisolated static let controlPage = 80
+    nonisolated static let controlMaxTail = 400
     private var controlServerId: String?
     /// Leaving Control drops back to the short tail, so a collapsed panel polls little.
     @Published var controlOpen = false { didSet { if !controlOpen { controlTail = Self.controlPage } } }
