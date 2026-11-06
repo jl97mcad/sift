@@ -1,47 +1,51 @@
 import SwiftUI
 import AppKit
 
-/// Watches the pointer so the face's eyes can follow it.
+/// Watches the pointer so the face's eyes can follow it. Driven by pointer-move events,
+/// not a timer: a resting pointer, an expanded panel or Reduce Motion costs no wakeups.
 @MainActor
 final class GazeTracker: ObservableObject {
     static let shared = GazeTracker()
     @Published private(set) var offset: CGSize = .zero
     @Published private(set) var proximity: Double = 0
-    @Published private(set) var near = false
     var active = true
 
-    private var timer: Timer?
+    private var monitors: [Any] = []
+    private var lastUpdate = Date.distantPast
 
     func start() {
-        guard timer == nil else { return }
-        let timer = Timer(timeInterval: 0.04, repeats: true) { _ in
+        guard monitors.isEmpty else { return }
+        let events: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged]
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: events, handler: { _ in
             MainActor.assumeIsolated { GazeTracker.shared.update() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
+        }) { monitors.append(global) }
+        if let local = NSEvent.addLocalMonitorForEvents(matching: events, handler: { event in
+            MainActor.assumeIsolated { GazeTracker.shared.update() }
+            return event
+        }) { monitors.append(local) }
     }
 
     private func update() {
-        guard active, let frame = PanelBridge.shared.panel?.frame else { return }
-        let center = NSPoint(x: frame.midX, y: frame.midY)
+        // At most 30 updates a second while the pointer moves.
+        guard active, Date().timeIntervalSince(lastUpdate) > 0.033,
+              let frame = PanelBridge.shared.panel?.frame else { return }
+        lastUpdate = Date()
         let mouse = NSEvent.mouseLocation
-        let dx = mouse.x - center.x
-        let dy = mouse.y - center.y
-        let distance = max(1, sqrt(dx * dx + dy * dy))
-        let hoverDistance = distance
-        let newProximity = max(0, min(1, 1 - (hoverDistance - 22) / 68))
-        if abs(newProximity - proximity) > 0.02 { proximity = newProximity }
-        let shouldBeNear = near ? hoverDistance < 110 : hoverDistance < 85
-        if shouldBeNear != near { near = shouldBeNear }
-
-
-        let reach: CGFloat = 2.8
-        let strength = min(1, distance / 180)
-        let target = CGSize(width: dx / distance * reach * strength,
-                            height: -dy / distance * reach * strength)
+        let look = Self.look(dx: mouse.x - frame.midX, dy: mouse.y - frame.midY)
+        if abs(look.proximity - proximity) > 0.02 { proximity = look.proximity }
+        let target = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? .zero : look.offset
         if abs(target.width - offset.width) > 0.06 || abs(target.height - offset.height) > 0.06 {
             offset = target
         }
+    }
+
+    /// Eye offset toward the pointer (screen coordinates, y up) and hover closeness 0...1.
+    nonisolated static func look(dx: CGFloat, dy: CGFloat) -> (offset: CGSize, proximity: Double) {
+        let distance = max(1, (dx * dx + dy * dy).squareRoot())
+        let reach: CGFloat = 2.8
+        let strength = min(1, distance / 180)
+        return (CGSize(width: dx / distance * reach * strength, height: -dy / distance * reach * strength),
+                max(0, min(1, 1 - Double(distance - 22) / 68)))
     }
 }
 

@@ -5,6 +5,7 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store: Store
     private let panelController: PanelController
+    private let bubbleController: EdgeBubbleController
     private let demoMode: Bool
     private var statusItem: NSStatusItem?
     private var outsideMonitor: Any?
@@ -21,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             store.searchOpen = true
         }
         panelController = PanelController(store: store)
+        bubbleController = EdgeBubbleController(store: store)
         super.init()
     }
 

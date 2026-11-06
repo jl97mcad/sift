@@ -28,6 +28,27 @@ struct ReplyBlock: Equatable {
     let text: String
     var marker: String? = nil
 
+    private final class Box<Value> { let value: Value; init(_ value: Value) { self.value = value } }
+    private static let blocks = NSCache<NSString, Box<[ReplyBlock]>>()
+    private static let inlines = NSCache<NSString, Box<AttributedString>>()
+
+    /// Parsed blocks keyed by content, so redraws do not re-parse unchanged replies.
+    static func cached(_ text: String) -> [ReplyBlock] {
+        if let hit = blocks.object(forKey: text as NSString) { return hit.value }
+        let parsed = parse(text)
+        blocks.setObject(Box(parsed), forKey: text as NSString)
+        return parsed
+    }
+
+    /// Inline Markdown for one block, cached by its text.
+    static func inline(_ text: String) -> AttributedString {
+        if let hit = inlines.object(forKey: text as NSString) { return hit.value }
+        let parsed = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(text)
+        inlines.setObject(Box(parsed), forKey: text as NSString)
+        return parsed
+    }
+
     static func parse(_ text: String) -> [ReplyBlock] {
         var blocks: [ReplyBlock] = []
         var buffer: [String] = []

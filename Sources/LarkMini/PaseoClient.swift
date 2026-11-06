@@ -65,6 +65,12 @@ struct AgentMessage: Identifiable, Equatable {
     }
 }
 
+/// A pending Paseo permission request; its id lets a seen request stop pulsing.
+struct PermissionRequest: Equatable {
+    let id: String
+    let title: String
+}
+
 struct AgentReading {
     let messages: [AgentMessage]
     let status: String
@@ -77,6 +83,7 @@ struct AgentReading {
     var successor: ControlOption? = nil
     /// Open asks from the same daemon's control-plugins suite.
     var asks: AskReading = .off
+    var permissions: [PermissionRequest] = []
 }
 
 /// Talks to a local Paseo daemon through its CLI, so a pinned Control seat
@@ -144,7 +151,11 @@ final class PaseoClient {
             needsInput: json["needsInput"] as? Bool ?? false,
             activity: activity(status: status, action: json["action"] as? [String: Any]),
             hasOlder: json["hasOlder"] as? Bool ?? false,
-            title: json["title"] as? String, successor: successor, asks: AskInbox.parse(json["asks"]))
+            title: json["title"] as? String, successor: successor, asks: AskInbox.parse(json["asks"]),
+            permissions: (json["permissions"] as? [[String: Any]] ?? []).compactMap { row in
+                guard let id = row["id"] as? String, !id.isEmpty else { return nil }
+                return PermissionRequest(id: id, title: row["title"] as? String ?? "")
+            })
     }
 
     // Use the installed CLI's own client, target selection and projected timeline.
@@ -169,7 +180,8 @@ final class PaseoClient {
         const suite = (Array.isArray(listed) ? listed : listed?.plugins ?? []).find(p => p.id === 'control-plugins');
         asks = suite?.status === 'running' ? await client.invokePluginRpc('control-plugins', 'asks.open', {}) : {status:'off'};
       } catch { asks = {status:'unavailable', reason:"This Control's plugins do not serve open asks yet"}; }
-      const base = {title:agent.title ?? null, asks,
+      const permissions = (agent.pendingPermissions ?? []).map(p => ({id:String(p.id ?? ''), title:String(p.title ?? p.name ?? '')})).filter(p => p.id);
+      const base = {title:agent.title ?? null, asks, permissions,
         needsInput:Boolean(agent.pendingPermissions?.length)};
       if (agent.archivedAt) {
         const live = seat ? (await fetchAllAgents(client, {filter:{labels:{seat}}}))

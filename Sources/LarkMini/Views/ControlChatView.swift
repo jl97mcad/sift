@@ -16,6 +16,15 @@ struct ControlChatView: View {
                 }
                 .panelDragHandle().help("Drag to move Sift")
                 Spacer(minLength: 0)
+                if store.openAskCount > 0 {
+                    Button { store.controlFocusAsks = true } label: {
+                        Label(store.openAskCount == 1 ? "1 ask" : "\(store.openAskCount) asks", systemImage: "hand.raised")
+                            .font(.system(size: 11, weight: .semibold)).foregroundStyle(SiftStyle.green)
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(SiftStyle.green.opacity(0.12), in: Capsule())
+                    }
+                    .buttonStyle(.plain).help("Jump to open asks")
+                }
                 IconButton(symbol: "arrow.clockwise", help: "Refresh conversation") {
                     store.errorText = nil
                     Task { await store.refreshControl() }
@@ -44,7 +53,7 @@ struct ControlChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    asks
+                    asks.id("asks")
                     if store.controlHasOlder && !store.controlMessages.isEmpty {
                         Text("Recent messages · earlier history is in Paseo")
                             .font(.system(size: 11)).foregroundStyle(SiftStyle.muted).padding(.bottom, 16)
@@ -65,6 +74,11 @@ struct ControlChatView: View {
             .scrollIndicators(.never)
             .defaultScrollAnchor(.bottom)
             .id(store.controlSeat?.agentId)
+            .onChange(of: store.controlFocusAsks, initial: true) {
+                guard store.controlFocusAsks else { return }
+                store.controlFocusAsks = false
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { proxy.scrollTo("asks", anchor: .top) }
+            }
             .onChange(of: store.controlMessages.last?.id) { old, _ in
                 guard old != nil else { return }
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { proxy.scrollTo("bottom", anchor: .bottom) }
@@ -196,7 +210,7 @@ struct PaseoBubble: View {
     var showHeader = true
     var links = ChatLinks(chats: [])
     @State private var expanded = false
-    private var blocks: [ReplyBlock] { ReplyBlock.parse(message.displayText) }
+    private var blocks: [ReplyBlock] { ReplyBlock.cached(message.displayText) }
     private var isLong: Bool { message.isAssistant && message.text.count > 1200 && blocks.count > 2 }
 
     var body: some View {
@@ -245,8 +259,7 @@ private struct ReplyBlockView: View {
     var links = ChatLinks(chats: [])
     /// Monospaced code reads larger than body text at the same size; one point smaller evens lines.
     private var inline: AttributedString {
-        var text = (try? AttributedString(markdown: block.text,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(block.text)
+        var text = ReplyBlock.inline(block.text)
         for run in text.runs where run.inlinePresentationIntent?.contains(.code) == true {
             text[run.range].font = .system(size: block.kind == .heading ? 13 : 12, design: .monospaced)
         }

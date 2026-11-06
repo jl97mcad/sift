@@ -92,9 +92,11 @@ struct UnreadDot: View {
 }
 
 /// Only an unseen request for the owner pulses; ordinary unread replies keep a small dot.
+/// Three soft beats when it appears, then a still ring: no animation at rest.
 struct AttentionPulse: View {
     @Environment(\.siftReduceMotion) private var reduceMotion
     var size: CGFloat
+    @State private var beats = 0
 
     private var ring: some View {
         Circle().strokeBorder(SiftStyle.green, lineWidth: 1.5).frame(width: size, height: size)
@@ -104,11 +106,19 @@ struct AttentionPulse: View {
         Group {
             if reduceMotion { ring.opacity(0.65) }
             else {
-                ring.phaseAnimator([false, true]) { content, phase in
+                ring.phaseAnimator([false, true], trigger: beats) { content, phase in
                     content.scaleEffect(phase ? 1.16 : 1).opacity(phase ? 0.18 : 0.65)
-                } animation: { _ in .easeInOut(duration: 1.4) }
+                } animation: { _ in .easeInOut(duration: 0.7) }
             }
-        }.allowsHitTesting(false).accessibilityHidden(true)
+        }
+        .task {
+            guard !reduceMotion else { return }
+            for _ in 0..<3 {
+                beats += 1
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+            }
+        }
+        .allowsHitTesting(false).accessibilityHidden(true)
     }
 }
 

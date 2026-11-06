@@ -14,7 +14,16 @@ final class Store: ObservableObject {
     @Published private(set) var auth: AuthState = .unknown
     @Published private(set) var me: Me?
     @Published var openChat: Chat?
-    @Published var isExpanded = true
+    @Published var isExpanded = true {
+        didSet { if isExpanded { dismissBubble() } }
+    }
+    /// The thought bubble beside the collapsed head.
+    @Published private(set) var bubble: EdgeBubble?
+    /// Set when a bubble opens Control, so it scrolls to the asks.
+    @Published var controlFocusAsks = false
+    private var bubbleExpiry: Task<Void, Never>?
+    private var bubbleHeld = false
+    private var bubbledNeeds = Set<String>()
     @Published var showingSettings = false
     @Published var showingShortcuts = false
     @Published var deviceCode: DeviceCode?
@@ -47,6 +56,8 @@ final class Store: ObservableObject {
     @Published var controlActivity: String?
     @Published private(set) var controlHasOlder = false
     @Published private(set) var controlNeedsInput = false
+    @Published private(set) var controlPermissions: [PermissionRequest] = []
+    private var seenPermissions = Set(UserDefaults.standard.stringArray(forKey: "seenPermissions") ?? [])
     @Published private(set) var asks: AskReading = .off
     @Published private(set) var seenAsks = Set(UserDefaults.standard.stringArray(forKey: "seenAsks") ?? [])
     @Published private(set) var controlStatus = "Not checked"
@@ -62,7 +73,9 @@ final class Store: ObservableObject {
     /// Live needs-you: Paseo is waiting on a permission, or the Control's runner has an open ask.
     var openAskCount: Int { asks.asks.count }
     /// Pulses until seen, then goes quiet like a read reply; open asks stay listed in Control.
-    var needsYouUnseen: Bool { controlNeedsInput || asks.asks.contains { !seenAsks.contains($0.id) } }
+    var needsYouUnseen: Bool {
+        controlPermissions.contains { !seenPermissions.contains($0.id) } || asks.asks.contains { !seenAsks.contains($0.id) }
+    }
 
     var attentionSummary: String? {
         if controlNeedsInput { return "Waiting for your permission" }
@@ -291,7 +304,6 @@ final class Store: ObservableObject {
                 for id in pinned where !chats.contains(where: { $0.id == id }) {
                     if let chat = try? await api.chatDetail(id) { chats.append(chat) }
                 }
-                await previewImportant()
                 await hydrateNames(chats.filter { $0.name.isEmpty || $0.avatar == nil })
                 Cache.save(CachePayload(chats: chats, previews: previews, savedAt: Date()))
             }
@@ -346,12 +358,6 @@ final class Store: ObservableObject {
     }
 
     /// Only what the panel actually shows: the pinned icons and the open chat.
-    private func previewImportant() async {
-        var ids = pinned
-        if let openChat { ids.append(openChat.id) }
-        await refreshPreviews(ids)
-    }
-
     private func refreshPreviews(_ ids: [String]) async {
         guard auth == .signedIn, !isDemo else { return }
         await withTaskGroup(of: (String, Preview?).self) { group in
@@ -369,8 +375,8 @@ final class Store: ObservableObject {
             while let result = await group.next() {
                 inflight -= 1
                 if let preview = result.1 {
-                    if let existing = self.previews[result.0], existing.ts > preview.ts {
-                        // keep newer
+                    // Keep a newer preview, and skip unchanged ones so the list does not redraw every tick.
+                    if let existing = self.previews[result.0], existing.ts > preview.ts || existing == preview {
                     } else {
                         let previous = self.previews[result.0]
                         self.previews[result.0] = preview
@@ -378,12 +384,12 @@ final class Store: ObservableObject {
                         if previous != nil,
                            previous?.messageId != preview.messageId,
                            !preview.fromMe,
-                           self.pinned.contains(result.0),
                            !self.isMuted(id: result.0),
                            !self.isVisible(id: result.0),
                            self.lastSeen[result.0] != preview.messageId,
                            let chat = self.chats.first(where: { $0.id == result.0 }) {
-                            self.pushToast(chat: chat, text: preview.text)
+                            if self.pinned.contains(result.0) { self.pushToast(chat: chat, text: preview.text) }
+                            else { self.larkArrival(chat: chat, text: preview.text) }
                         }
                     }
                 }
@@ -552,6 +558,7 @@ final class Store: ObservableObject {
     func pushToast(chat: Chat, text: String) {
         let event = "chat-\(chat.id)-\(previews[chat.id]?.messageId ?? "")"
         Task { await Notifications.shared.post(title: chat.displayName, body: text, id: event, destination: chat.id) }
+        guard isExpanded else { larkArrival(chat: chat, text: text); return }
         toasts.removeAll { $0.chat.id == chat.id }
         let toast = ChatToast(id: UUID(), chat: chat, text: text)
         toasts.append(toast)
@@ -824,6 +831,7 @@ final class Store: ObservableObject {
         controlStatus = "Not checked"
         controlActivity = nil
         controlNeedsInput = false
+        controlPermissions = []
         controlHasOlder = false
         controlMessages = []
         controlSeat = seat
@@ -849,11 +857,64 @@ final class Store: ObservableObject {
     func markControlRead() {
         guard controlOpen, isExpanded, PanelBridge.shared.panel?.isKeyWindow == true else { return }
         controlAttention = nil
+        // Remember only needs that are still open, so both lists stay bounded.
+        let permissions = Set(controlPermissions.map(\.id))
+        if !permissions.isSubset(of: seenPermissions) {
+            seenPermissions = permissions
+            UserDefaults.standard.set(Array(permissions), forKey: "seenPermissions")
+        }
         let open = Set(asks.asks.map(\.id))
         guard !open.isSubset(of: seenAsks) else { return }
-        // Remember only asks that are still open, so the list stays bounded.
         seenAsks = open
         UserDefaults.standard.set(Array(seenAsks), forKey: "seenAsks")
+    }
+
+    // MARK: - Edge bubble
+
+    /// A new Lark message while collapsed: one soft bubble, bursts coalesce.
+    func larkArrival(chat: Chat, text: String) {
+        guard !isExpanded else { return }
+        bubble = EdgeBubble.arrival(bubble, chatId: chat.id, name: chat.displayName, text: text)
+        expireBubble(after: 6)
+    }
+
+    /// A genuine Control need (open ask or permission request), shown once per need.
+    func needArrival(id: String, text: String) {
+        guard !isExpanded, bubbledNeeds.insert(id).inserted else { return }
+        bubble = EdgeBubble(target: .control, title: "Control needs you", text: text)
+        expireBubble(after: 12)
+    }
+
+    func holdBubble(_ hovering: Bool) {
+        bubbleHeld = hovering
+        if !hovering, bubble != nil { expireBubble(after: 3) }
+    }
+
+    func dismissBubble() {
+        bubbleExpiry?.cancel()
+        bubbleHeld = false
+        if bubble != nil { bubble = nil }
+    }
+
+    /// Opens what the bubble is about; never sends anything.
+    func openBubble() {
+        guard let target = bubble?.target else { return }
+        dismissBubble()
+        switch target {
+        case .chat(let id): openLinkedChat(id)
+        case .inbox: showInbox()
+        case .control: openControl(); controlFocusAsks = true
+        }
+        NotificationCenter.default.post(name: .expandPanel, object: nil)
+    }
+
+    private func expireBubble(after seconds: Double) {
+        bubbleExpiry?.cancel()
+        bubbleExpiry = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled, let self, !self.bubbleHeld else { return }
+            self.bubble = nil
+        }
     }
 
     func refreshControl() async {
@@ -876,7 +937,13 @@ final class Store: ObservableObject {
             controlHasOlder = reading.hasOlder
             controlNeedsInput = reading.needsInput
             asks = reading.asks
+            controlPermissions = reading.permissions
+            for permission in reading.permissions where !seenPermissions.contains(permission.id) {
+                needArrival(id: "permission-\(permission.id)",
+                            text: permission.title.isEmpty ? "Waiting for your permission in Paseo" : permission.title)
+            }
             for ask in asks.asks where !seenAsks.contains(ask.id) {
+                needArrival(id: "ask-\(ask.id)", text: UpdateText.short(ask.title.isEmpty ? ask.question : ask.title, limit: 90))
                 await Notifications.shared.post(title: "Needs you" + (ask.plan.isEmpty ? "" : " · \(ask.plan)"),
                     body: UpdateText.short(ask.title.isEmpty ? ask.question : ask.title, limit: 120),
                     id: "ask-\(ask.id)", destination: "control")
