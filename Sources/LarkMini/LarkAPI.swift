@@ -18,19 +18,22 @@ actor LarkAPI {
         meOpenId = id
     }
 
-    var scopeList: String {
-        [
-            "im:chat:read",
-            "im:message",
-            "im:message.p2p_msg:get_as_user",
-            "im:message.group_msg:get_as_user",
-            "im:chat.members:read",
-            "im:resource",
-            "im:message.send_as_user",
-            "contact:user.base:readonly",
-            "offline_access"
-        ].joined(separator: " ")
-    }
+    /// What sign-in asks for: exactly the scopes AGENTS.md and the README tell people to enable.
+    /// `contact:user:search` finds direct-chat pictures through user search.
+    static let scopes = [
+        "im:chat:read",
+        "im:message",
+        "im:message.p2p_msg:get_as_user",
+        "im:message.group_msg:get_as_user",
+        "im:chat.members:read",
+        "im:resource",
+        "im:message.send_as_user",
+        "contact:user.base:readonly",
+        "contact:user:search",
+        "offline_access"
+    ]
+
+    var scopeList: String { Self.scopes.joined(separator: " ") }
 
     init(tokens: TokenStore) {
         self.tokens = tokens

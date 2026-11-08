@@ -166,4 +166,22 @@ final class LarkFidelityTests: XCTestCase {
         XCTAssertEqual(LarkAPI.embeddedImages(["b": ["tag": "img", "image_key": "2"], "a": ["tag": "img", "image_key": "1"]]),
                        ["1", "2"], "objects within the budget keep a stable key order")
     }
+
+    func testSignInAsksForExactlyTheDocumentedScopes() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let scope = #"`([a-z0-9_]+:[a-z0-9_.:]+|offline_access)`"#
+        func documented(_ file: String, from start: String, to end: String) throws -> Set<String> {
+            let text = try String(contentsOf: root.appendingPathComponent(file), encoding: .utf8)
+            let section = try XCTUnwrap(text.range(of: start).flatMap { begin in
+                text.range(of: end, range: begin.upperBound..<text.endIndex).map { text[begin.upperBound..<$0.lowerBound] } })
+            let regex = try NSRegularExpression(pattern: scope)
+            let found = String(section)
+            return Set(regex.matches(in: found, range: NSRange(found.startIndex..., in: found)).compactMap {
+                Range($0.range(at: 1), in: found).map { String(found[$0]) } })
+        }
+        let requested = Set(LarkAPI.scopes)
+        XCTAssertEqual(requested.count, LarkAPI.scopes.count, "no duplicates")
+        XCTAssertEqual(try documented("AGENTS.md", from: "scopes enabled and approved:", to: "2. Approving"), requested)
+        XCTAssertEqual(try documented("README.md", from: "| Scope", to: "\n\n"), requested)
+    }
 }
