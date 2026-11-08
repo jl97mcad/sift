@@ -184,4 +184,14 @@ final class LarkFidelityTests: XCTestCase {
         XCTAssertEqual(try documented("AGENTS.md", from: "scopes enabled and approved:", to: "2. Approving"), requested)
         XCTAssertEqual(try documented("README.md", from: "| Scope", to: "\n\n"), requested)
     }
+
+    func testARefusedScopeIsNamedWithTheSetupStep() {
+        XCTAssertEqual(LarkAPI.scopeRefusal(code: "invalid_scope", description: "scope contact:user:search is not applied"),
+                       "Lark refused the contact:user:search scope for this app. Enable it on your Lark app (README, Setup step 1), then sign in again.")
+        // contact:user.base:readonly and contact:user:search share a prefix; the longest match names the scope.
+        XCTAssertTrue(LarkAPI.scopeRefusal(code: "invalid_scope", description: "contact:user.base:readonly missing")?.contains("contact:user.base:readonly") == true)
+        XCTAssertEqual(LarkAPI.scopeRefusal(code: "invalid_scope", description: nil),
+                       "Lark refused a requested scope for this app. Enable it on your Lark app (README, Setup step 1), then sign in again.")
+        XCTAssertNil(LarkAPI.scopeRefusal(code: "slow_down", description: "try later"))
+    }
 }

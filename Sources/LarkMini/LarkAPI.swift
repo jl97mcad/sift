@@ -35,6 +35,16 @@ actor LarkAPI {
 
     var scopeList: String { Self.scopes.joined(separator: " ") }
 
+    /// A sign-in Lark refused over a scope says which one to enable and where, instead of
+    /// passing on Lark's raw error. nil for any other error.
+    static func scopeRefusal(code: String?, description: String?) -> String? {
+        let text = description ?? ""
+        let named = scopes.filter { text.contains($0) }.max { $0.count < $1.count }
+        guard code == "invalid_scope" || named != nil else { return nil }
+        let what = named.map { "the \($0) scope" } ?? "a requested scope"
+        return "Lark refused \(what) for this app. Enable it on your Lark app (README, Setup step 1), then sign in again."
+    }
+
     init(tokens: TokenStore) {
         self.tokens = tokens
         let config = URLSessionConfiguration.default
@@ -128,7 +138,8 @@ actor LarkAPI {
         guard (response as? HTTPURLResponse)?.statusCode == 200,
               let deviceCode = json["device_code"] as? String,
               let userCode = json["user_code"] as? String else {
-            let msg = json["error_description"] as? String ?? json["error"] as? String ?? "Could not start sign-in"
+            let msg = Self.scopeRefusal(code: json["error"] as? String, description: json["error_description"] as? String)
+                ?? json["error_description"] as? String ?? json["error"] as? String ?? "Could not start sign-in"
             throw APIError(status: (response as? HTTPURLResponse)?.statusCode ?? 400, message: msg)
         }
         let verifyString = (json["verification_uri_complete"] as? String)
@@ -187,7 +198,8 @@ actor LarkAPI {
             case "expired_token", "invalid_grant":
                 throw APIError(status: 400, message: "Code expired, try again")
             case let other?:
-                throw APIError(status: 400, message: json["error_description"] as? String ?? other)
+                let description = json["error_description"] as? String
+                throw APIError(status: 400, message: Self.scopeRefusal(code: other, description: description) ?? description ?? other)
             case nil:
                 continue
             }
