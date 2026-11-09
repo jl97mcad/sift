@@ -1,8 +1,15 @@
 {
-  "assistant": "Sift",
-  "person": "Jon",
+  "assistant": "",
+  "person": "Alex",
   "timezone": "Europe/London",
-  "about": "Jon runs Outlandish, a TikTok Shop agency. His work runs through Paseo agent sessions: Control routes plans, a god session keeps his decisions, and a Voice session reads his sources and acts for him.",
-  "worker": { "seat": "voice", "name": "Voice" },
-  "frontModel": "anthropic/claude-haiku-5.5"
+  "language": "en",
+  "about": "One or two sentences about the person and how their work runs.",
+  "frontModel": "anthropic/claude-haiku-5.5",
+  "workers": [
+    { "name": "Control", "url": "ws://127.0.0.1:6767/ws", "seat": "control",
+      "use": "Plans, agents, PRs, deploys and getting things done", "handoff": "I'll ask Control" },
+    { "name": "plan lead", "url": "ws://127.0.0.1:6767/ws", "lead": true,
+      "use": "One plan's detail; needs the plan number", "handoff": "I'll check with that plan's lead" }
+  ],
+  "needs": { "command": "" }
 }
