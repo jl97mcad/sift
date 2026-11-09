@@ -149,7 +149,7 @@ async function run(job) {
   }
   broadcast({ type: "job", job: view(job) });
   await serial(async () => {
-    const text = (await summarise(config, history, job).catch(() => "")) || `${job.to} finished "${job.task}".`;
+    const text = (await summarise(config, history, job).catch(() => "")) || `${job.to[0].toUpperCase()}${job.to.slice(1)} has answered. It's on the card.`;
     broadcast({ type: "say", text, audio: await voice(text) });
   });
 }
