@@ -76,6 +76,7 @@ struct AvatarView: View {
             SiftStyle.raised
             Text(chat.initials)
                 .font(.system(size: size * 0.36, weight: .semibold))
+                .lineLimit(1).minimumScaleFactor(0.6).fixedSize()
                 .foregroundStyle(.white.opacity(0.9))
         }
     }
@@ -243,5 +244,16 @@ extension View {
             .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(SiftStyle.line))
             .padding(.horizontal, 12)
             .padding(.top, 10)
+    }
+}
+
+/// A small tag such as INTERNAL beside a chat name, so the name itself has room.
+struct TagBadge: View {
+    let text: String
+    var body: some View {
+        Text(text).font(.system(size: 9, weight: .semibold)).foregroundStyle(SiftStyle.muted)
+            .padding(.horizontal, 4).padding(.vertical, 1)
+            .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(SiftStyle.line, lineWidth: 1))
+            .fixedSize()
     }
 }
