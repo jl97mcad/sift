@@ -2,7 +2,7 @@ import AppKit
 import Carbon.HIToolbox
 
 /// A global key, registered with Carbon so it works without accessibility permissions and
-/// while another app is frontmost. Option-Space toggles the panel; Option-Shift-Space and F5 are voice.
+/// while another app is frontmost. Option-Space toggles the panel; Option-Shift-Space and Control-Option-V are voice.
 @MainActor
 final class GlobalHotKey {
     private var hotKeyRef: EventHotKeyRef?
