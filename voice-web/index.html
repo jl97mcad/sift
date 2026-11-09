@@ -103,47 +103,45 @@
   @media (prefers-reduced-motion: reduce) {
     *, *::before { animation: none !important; transition: none !important; }
   }
+  .job { border: 1px solid var(--line); background: var(--panel); border-radius: 14px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; animation: rise .3s ease-out both; }
+  .job .title { font-size: 14px; color: var(--text); }
+  .job .meta { font-size: 12px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .job .meta::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--mint); animation: breathe 1.2s ease-in-out infinite; }
+  .job.done .meta::before { background: var(--green); animation: none; }
+  .job.failed .meta::before { background: #ff8a7a; animation: none; }
+  .sift { margin: 0; font-size: 17px; line-height: 1.5; }
 </style>
 </head>
 <body>
-<header><h1>Sift</h1><span id="chip">Ready</span></header>
+<header><h1 id="name">Sift</h1><span id="chip">Ready</span></header>
 <main id="thread" aria-live="polite">
-  <div id="empty"><strong>Ask me anything</strong>Tap the orb and talk, then tap again.<br>Or hold it while you talk.</div>
+  <div id="empty"><strong>Just talk</strong>Tap the orb once. I'll listen, answer, and listen again.<br>Talk over me to interrupt. Tap again to stop.</div>
 </main>
 <footer>
-  <button id="talk" aria-label="Tap to talk"><span class="halo"></span><span class="orb"></span></button>
-  <div id="hint" role="status">Tap to talk</div>
+  <button id="talk" aria-label="Start talking"><span class="halo"></span><span class="orb"></span></button>
+  <div id="hint" role="status">Tap to start</div>
 </footer>
 <script>
 const $ = (id) => document.getElementById(id);
 const empty = $("empty"), button = $("talk"), hint = $("hint"), chip = $("chip"), thread = $("thread");
-let controller, recorder, chunks = [], stream, meter, meterContext, state = "idle", turn = 0, queue = [], playing = false, stopped = false;
+// ponytail: fixed loudness thresholds (0..1 RMS); tune here if a room cuts turns short or hears echoes.
+const SPEECH = 0.035, BARGE = 0.09, END_SILENCE = 800, MIN_SPEECH = 300, MAX_TURN = 60_000, IDLE_PAUSE = 45_000;
 
-const labels = { idle: ["Ready", "Tap to talk"], starting: ["Ready", "Opening the microphone…"],
-  listening: ["Listening", "Tap or let go to send"], waiting: ["Working", "Tap to stop"], speaking: ["Speaking", "Tap to stop"] };
-function set(next, hintText) {
-  state = next;
-  document.body.className = next;
-  chip.textContent = labels[next][0];
-  hint.textContent = hintText ?? labels[next][1];
-  button.setAttribute("aria-label", labels[next][1]);
+let on = false, phase = "off", stream, mic, analyser, data, recorder, chunks = [], speechStart = 0, lastLoud = 0, listenSince = 0, loopTimer;
+let player, current, queue = [], playing = false, generation = 0, controller;
+
+function set(next, text) {
+  phase = next;
+  document.body.className = { off: "idle", listening: "listening", hearing: "listening", thinking: "waiting", speaking: "speaking" }[next];
+  chip.textContent = { off: "Ready", listening: "Listening", hearing: "Hearing you", thinking: "Thinking", speaking: "Speaking" }[next];
+  hint.textContent = text ?? { off: "Tap to start", listening: "Listening… tap to stop", hearing: "Go on…", thinking: "One sec…", speaking: "Talk over me to interrupt" }[next];
+  button.setAttribute("aria-label", on ? "Stop the conversation" : "Start talking");
 }
-function el(tag, cls, text) { const node = document.createElement(tag); node.className = cls; if (text) node.textContent = text; return node; }
-function scroll() { thread.scrollTo({ top: thread.scrollHeight, behavior: "smooth" }); }
+function el(tag, cls, text) { const n = document.createElement(tag); n.className = cls; if (text) n.textContent = text; return n; }
+function add(node) { empty.remove(); thread.append(node); thread.scrollTo({ top: thread.scrollHeight, behavior: "smooth" }); return node; }
+function audioMode(type) { try { if (navigator.audioSession) navigator.audioSession.type = type; } catch {} }
 
-function newTurn() {
-  empty.remove();
-  const box = el("section", "turn");
-  const you = el("p", "you", "…"), steps = el("ol", "steps"), reply = el("p", "reply");
-  box.append(you, steps, reply);
-  thread.append(box);
-  scroll();
-  return { box, you, steps, reply };
-}
-
-// Replies play through one Web Audio context made inside a press. iPhone lets a context that was
-// started by a tap keep playing later clips; a plain <audio> element only played the first one.
-let player, current;
+// ---- Speaking: one Web Audio context, unlocked by the first tap, plays every clip in order.
 function unlockPlayer() {
   player = player ?? new (window.AudioContext || window.webkitAudioContext)();
   player.resume();
@@ -152,185 +150,147 @@ function unlockPlayer() {
   silence.connect(player.destination);
   silence.start(0);
 }
-
-async function playClip(bytes, mine) {
-  const buffer = await player.decodeAudioData(bytes);
-  if (stopped || turn !== mine) return; // stopped while it decoded
-  if (player.state !== "running") await player.resume();
-  await new Promise((done) => {
-    const source = player.createBufferSource();
-    source.buffer = buffer;
-    source.connect(player.destination);
-    source.onended = done;
-    current = source;
-    if (state === "waiting") set("speaking"); // only once audio really starts
-    source.start();
-  });
-  current = null;
-}
-
-async function playQueue(mine) {
+const clipBytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;
+async function playQueue() {
   if (playing) return;
   playing = true;
-  while (queue.length && !stopped && turn === mine) {
-    const next = queue.shift();
+  const mine = generation;
+  while (queue.length && mine === generation) {
     try {
-      const bytes = typeof next === "string" ? await (await fetch(next)).arrayBuffer() : next;
-      if (stopped || turn !== mine) break;
-      if (bytes.byteLength) await playClip(bytes, mine);
-    } catch (error) {
-      console.warn("Sift voice: a clip didn't play", error);
-    }
+      const buffer = await player.decodeAudioData(queue.shift());
+      if (mine !== generation) break;
+      if (player.state !== "running") await player.resume();
+      if (on && phase !== "hearing") set("speaking");
+      await new Promise((done) => {
+        const source = player.createBufferSource();
+        source.buffer = buffer; source.connect(player.destination); source.onended = done;
+        current = source; source.start();
+      });
+    } catch (error) { console.warn("A clip didn't play", error); }
   }
-  playing = false;
+  current = null; playing = false;
+  if (on && phase === "speaking") listen();
 }
-function enqueue(clip, mine) { queue.push(clip); playQueue(mine); }
-function stopVoice() { queue = []; try { current?.stop(); } catch {} current = null; }
+function speak(b64) { queue.push(clipBytes(b64)); playQueue(); }
+function hush() { generation += 1; queue = []; try { current?.stop(); } catch {} current = null; playing = false; }
 
-// iPhone: record in a call-style session, then switch back so replies play out loud through
-// the speaker, even with the silent switch on.
-function audioMode(type) { try { if (navigator.audioSession) navigator.audioSession.type = type; } catch {} }
-
-function clipBytes(base64) {
-  return Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)).buffer;
-}
-
-async function start(context) {
+// ---- Listening: the microphone stays open for the conversation; loudness decides the turns.
+async function begin() {
+  unlockPlayer();
   audioMode("play-and-record");
-  stream = stream ?? await navigator.mediaDevices.getUserMedia({ audio: true });
+  stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  mic = new (window.AudioContext || window.webkitAudioContext)();
+  await mic.resume();
+  analyser = mic.createAnalyser(); analyser.fftSize = 1024; data = new Float32Array(analyser.fftSize);
+  mic.createMediaStreamSource(stream).connect(analyser);
+  on = true;
+  listen();
+  loopTimer = setInterval(tick, 40);
+}
+function end(text) {
+  on = false; hush(); controller?.abort();
+  clearInterval(loopTimer);
+  try { recorder?.state === "recording" && recorder.stop(); } catch {}
+  stream?.getTracks().forEach((t) => t.stop()); stream = null;
+  mic?.close(); mic = null;
+  audioMode("playback");
+  document.documentElement.style.setProperty("--level", 0);
+  set("off", text);
+}
+function record() {
   const type = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"].find((t) => MediaRecorder.isTypeSupported(t)) ?? "";
   recorder = new MediaRecorder(stream, type ? { mimeType: type } : {});
   chunks = [];
   recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   recorder.start();
-  const analyser = context.createAnalyser(), data = new Uint8Array(256);
-  context.createMediaStreamSource(stream).connect(analyser);
-  meterContext = context;
-  meter = setInterval(() => {
-    analyser.getByteTimeDomainData(data);
-    let peak = 0; for (const v of data) peak = Math.max(peak, Math.abs(v - 128));
-    document.documentElement.style.setProperty("--level", Math.min(1, peak / 128 * 2.5).toFixed(2));
-  }, 50);
-  listeningAt = Date.now();
-  set("listening");
+}
+function listen() { record(); speechStart = 0; listenSince = Date.now(); set("listening"); }
+
+function level() {
+  analyser.getFloatTimeDomainData(data);
+  let sum = 0; for (const v of data) sum += v * v;
+  return Math.sqrt(sum / data.length);
+}
+function tick() {
+  if (!on || !analyser) return;
+  const rms = level(), now = Date.now();
+  document.documentElement.style.setProperty("--level", Math.min(1, rms * 9).toFixed(2));
+  if (phase === "speaking" || phase === "thinking") {
+    // Barge-in: you talking over it stops it and starts your turn. Louder bar so it doesn't hear itself.
+    if (rms > BARGE) { speechStart ||= now; if (now - speechStart > 220) { hush(); controller?.abort(); listen(); speechStart = now; set("hearing"); } }
+    else speechStart = 0;
+    return;
+  }
+  if (phase === "listening" || phase === "hearing") {
+    if (rms > SPEECH) { lastLoud = now; if (!speechStart) speechStart = now; if (phase === "listening" && now - speechStart > 150) set("hearing"); }
+    if (phase === "hearing" && now - lastLoud > END_SILENCE && lastLoud - speechStart > MIN_SPEECH) send();
+    else if (phase === "hearing" && now - listenSince > MAX_TURN) send();
+    else if (phase === "listening" && !speechStart && now - listenSince > IDLE_PAUSE) end("Paused. Tap to talk again.");
+    if (phase === "hearing" && now - lastLoud > END_SILENCE && lastLoud - speechStart <= MIN_SPEECH) { speechStart = 0; set("listening"); }
+  }
 }
 
-async function finish() {
-  set("waiting", "Okay, let me look…");
-  const mine = ++turn;
-  stopped = false; stopVoice();
-  clearInterval(meter); meterContext?.close();
-  document.documentElement.style.setProperty("--level", 0);
+async function send() {
+  set("thinking");
   const done = new Promise((resolve) => (recorder.onstop = resolve));
   recorder.stop();
-  // The acknowledgement plays inside the tap, which also unlocks audio for the reply on iPhone.
-  enqueue("/api/ack", mine);
   await done;
-  stream.getTracks().forEach((track) => track.stop());
-  stream = null;
-  audioMode("playback"); // after the mic is off, so replies use the speaker
-  if (turn !== mine) return; // stopped while the recording closed
-  const view = newTurn();
-  const settle = (text) => { if (turn === mine) set("idle", text); };
+  const mine = generation;
+  const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+  const you = el("p", "you", "…"), reply = el("p", "sift");
+  add(you);
+  controller = new AbortController();
   try {
-    const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
-    controller = new AbortController();
-    const own = controller; // a late timer can only abort its own turn
-    const timer = setTimeout(() => own.abort(), 330_000);
-    const response = await fetch("/api/talk", { method: "POST", headers: { "Content-Type": blob.type }, body: blob, signal: controller.signal });
-    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Something went wrong.");
+    const response = await fetch("/api/turn", { method: "POST", headers: { "Content-Type": blob.type }, body: blob, signal: controller.signal });
     const reader = response.body.getReader(), decoder = new TextDecoder();
-    let buffer = "";
+    let buffer = "", spoke = false;
     for (;;) {
       const { value, done: ended } = await reader.read();
-      if (ended || turn !== mine) break;
+      if (ended) break;
       buffer += decoder.decode(value, { stream: true });
       let line;
       while ((line = buffer.indexOf("\n")) >= 0) {
-        const event = JSON.parse(buffer.slice(0, line));
-        buffer = buffer.slice(line + 1);
-        if (event.type === "heard") {
-          if (!event.text) {
-            view.box.remove();
-            if (!thread.querySelector(".turn")) thread.append(empty);
-            settle("Didn't catch anything. Nothing was sent.");
-            return;
-          }
-          view.you.textContent = event.text;
-        } else if (event.type === "step") {
-          view.steps.querySelectorAll(".step:not(.done)").forEach((s) => s.classList.add("done"));
-          view.steps.append(el("li", "step", event.label));
-          // Only the latest few steps; the count says how many came before.
-          const all = view.steps.querySelectorAll(".step");
-          all.forEach((s, i) => s.hidden = i < all.length - 4);
-          const earlier = all.length - 4;
-          let more = view.steps.querySelector(".more");
-          if (earlier > 0) {
-            if (!more) { more = el("li", "more"); view.steps.prepend(more); }
-            more.textContent = `${earlier} earlier step${earlier === 1 ? "" : "s"}`;
-          }
-        } else if (event.type === "update") {
-          hint.textContent = event.text;
-        } else if (event.type === "text") {
-          view.steps.querySelectorAll(".step").forEach((s) => s.classList.add("done"));
-          view.reply.textContent = event.text.replace(/\*\*|__|`/g, "");
-        } else if (event.type === "audio") {
-          enqueue(clipBytes(event.data), mine);
-        } else if (event.type === "error") {
-          view.box.append(el("p", "note", event.message));
-        }
-        scroll();
+        const event = JSON.parse(buffer.slice(0, line)); buffer = buffer.slice(line + 1);
+        if (mine !== generation) continue;
+        if (event.type === "heard") { if (!event.text) { you.remove(); } else you.textContent = event.text; }
+        else if (event.type === "text") { if (!reply.isConnected) add(reply); reply.textContent = event.text; }
+        else if (event.type === "audio") { spoke = true; speak(event.data); }
+        else if (event.type === "error") add(el("p", "note", event.message));
       }
     }
-    clearTimeout(timer); // only once the whole streamed answer has arrived
-    view.steps.querySelectorAll(".step").forEach((s) => s.classList.add("done"));
-    while ((playing || queue.length) && turn === mine && !stopped) await new Promise((r) => setTimeout(r, 120));
-    settle();
+    if (on && mine === generation && !spoke && !playing) listen();
   } catch (error) {
-    if (turn === mine) view.box.append(el("p", "note", error.message));
-    settle();
+    if (error.name !== "AbortError") add(el("p", "note", error.message));
+    if (on && phase === "thinking") listen();
   }
 }
 
-let pressedAt = 0, listeningAt = 0;
-function press() {
-  unlockPlayer(); // every press, so the reply can always play
-  if (state === "idle") {
-    pressedAt = Date.now();
-    set("starting");
-    navigator.vibrate?.(10);
-    // Made inside the tap so iPhone lets the level meter run.
-    const context = new AudioContext();
-    context.resume();
-    start(context).catch((e) => {
-      context.close(); stream?.getTracks().forEach((t) => t.stop()); stream = null;
-      audioMode("playback");
-      set("idle", "Microphone unavailable: " + e.message);
-    });
-  } else if (state === "listening") {
-    finish();
-  } else if (state === "waiting" || state === "speaking") {
-    stopped = true; turn++; stopVoice(); controller?.abort();
-    set("idle", "Stopped. The answer stays in Paseo.");
-  }
+// ---- Background work from the worker session: cards that update, and news spoken when ready.
+const cards = new Map();
+function showJob(job) {
+  let card = cards.get(job.id);
+  if (!card) { card = add(el("div", "job")); card.append(el("div", "title", job.task), el("div", "meta")); cards.set(job.id, card); }
+  card.className = `job ${job.status}`;
+  const step = job.steps.at(-1);
+  card.querySelector(".meta").textContent = { queued: "Waiting its turn", running: step ?? "Starting", done: "Done", failed: "Didn't finish" }[job.status] ?? job.status;
 }
-// Tap to start and tap to send, or hold while you talk and let go to send.
-button.addEventListener("pointerdown", (event) => {
-  event.preventDefault();
-  try { button.setPointerCapture(event.pointerId); } catch {} // capture is a nicety, never a blocker
-  press();
-});
-const release = () => {
-  // A hold sends on release; a slow tap (let go before the mic had been open a moment) keeps listening.
-  if (pressedAt && state === "listening" && Date.now() - listeningAt > 700) finish();
-  pressedAt = 0;
+const events = new EventSource("/api/events");
+events.onmessage = (message) => {
+  const event = JSON.parse(message.data);
+  if (event.type === "job") showJob(event.job);
+  if (event.type === "say") {
+    add(el("p", "sift", event.text));
+    if (player && (phase === "listening" || phase === "off" || phase === "speaking")) event.audio.forEach(speak);
+  }
 };
-button.addEventListener("pointerup", release);
-button.addEventListener("pointercancel", release);
-button.addEventListener("keydown", (event) => {
-  if ((event.key === " " || event.key === "Enter") && !event.repeat) { event.preventDefault(); press(); }
+fetch("/api/config").then((r) => r.json()).then((c) => { $("name").textContent = c.assistant; document.title = c.assistant; c.jobs.forEach(showJob); });
+
+button.addEventListener("click", () => {
+  if (!on) begin().catch((e) => end("Microphone unavailable: " + e.message));
+  else if (phase === "speaking" || phase === "thinking") { hush(); controller?.abort(); listen(); }
+  else end("Stopped. Tap to talk again.");
 });
-set("idle");
+set("off");
 </script>
 </body>
 </html>
