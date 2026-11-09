@@ -223,6 +223,7 @@ async function begin() {
   loopTimer = setInterval(tick, 40);
 }
 function end(text) {
+  pending?.bubble?.remove(); pending = null; muted = false; // a half-finished sentence never carries into the next chat
   on = false; hush(); controller?.abort();
   clearInterval(loopTimer);
   try { recorder?.state === "recording" && recorder.stop(); } catch {}

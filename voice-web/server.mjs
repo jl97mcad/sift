@@ -261,8 +261,16 @@ async function turn(request, response, typed) {
         }
       };
       const started = [];
-      response.on("close", () => { if (!response.writableFinished) started.forEach((job) => (job.cancelled = true)); });
-      await respond(config, history, heard, { delegate: (args) => { const reply = delegate(args, heard); if (jobs.at(-1)) started.push(jobs.at(-1)); return reply; }, job_status: jobStatus, needs_queue: needsQueue, stay_quiet: () => "Staying quiet.",
+      // The phone may have hung up already (it carried on talking): then nothing this turn starts may run.
+      const abandon = () => started.forEach((job) => (job.cancelled = true));
+      response.on("close", () => { if (!response.writableFinished) abandon(); });
+      await respond(config, history, heard, { delegate: (args) => {
+        const before = jobs.at(-1);
+        const reply = delegate(args, heard);
+        const job = jobs.at(-1);
+        if (job && job !== before) { started.push(job); if (!open) abandon(); } // only a job this call created
+        return reply;
+      }, job_status: jobStatus, needs_queue: needsQueue, stay_quiet: () => "Staying quiet.",
         handoffLine: (calls) => {
           const workers = workersOf(config);
           const lines = calls.map(({ to }) => workers.find((w) => w.name === to)?.handoff ?? `I'll ask ${to ?? "the team"}`);
