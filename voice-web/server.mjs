@@ -57,10 +57,11 @@ async function talk(request, response) {
     let speech = Promise.resolve();
     let budget = 2000; // ponytail: characters spoken per turn; the rest stays on screen
     let lastSpoke = Date.now();
+    let updates = 0;
     const say = (text) => {
-      lastSpoke = Date.now();
       for (const piece of pieces(plain(text))) {
         if ((budget -= piece.length) < 0) return;
+        lastSpoke = Date.now();
         const clip = speakPiece(piece).catch((error) => (console.error(error), null));
         speech = speech.then(async () => {
           const data = await clip;
@@ -98,7 +99,9 @@ async function talk(request, response) {
       }
       if (done) break;
       // Never quiet for long: after 15 s with nothing said, say what it's doing now.
-      if (start >= 0 && Date.now() - lastSpoke > 15_000) {
+      // The gap grows (15, 30, 45, then every 60 s) so a long stall doesn't talk non-stop.
+      if (start >= 0 && Date.now() - lastSpoke > Math.min(15_000 * (updates + 1), 60_000)) {
+        updates += 1;
         const line = progressLine(steps.at(-1), (Date.now() - stepSince) / 1000);
         lastSpoke = Date.now();
         const clip = speakPiece(line).catch(() => null);

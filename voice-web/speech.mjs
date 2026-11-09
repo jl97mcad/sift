@@ -114,7 +114,10 @@ export function stepLabel(item) {
   for (const [pattern, label] of rules) if (pattern.test(command)) return label;
   if (item.name === "Read") return "Reading a file";
   if (item.name === "WebSearch" || item.name === "WebFetch") return "Searching the web";
-  return "Running a command";
+  if (item.name === "Edit" || item.name === "Write") return "Editing a file";
+  if (item.name === "Grep" || item.name === "Glob") return "Searching files";
+  if (item.name === "TodoWrite") return "Planning the steps";
+  return item.name === "Bash" ? "Running a command" : "Working";
 }
 
 /** What Sift says when the agent has been quiet a while, so a voice-only user knows it's working. */
