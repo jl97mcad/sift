@@ -115,6 +115,8 @@
   .job li::before { content: "✓"; color: var(--mint); font-weight: 700; width: 12px; }
   .job.running li:last-child::before { content: ""; width: 9px; height: 9px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--mint) 35%, transparent); border-top-color: var(--mint); animation: spin .8s linear infinite; }
   .you .label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 2px; letter-spacing: .02em; }
+  #endChat { border: 1px solid var(--line); background: transparent; color: var(--muted); font: inherit; font-size: 13px; padding: 6px 14px; border-radius: 999px; cursor: pointer; }
+  #endChat:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
   form#ask { width: min(100%, 560px); display: flex; gap: 8px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 6px 6px 6px 16px; }
   form#ask input { flex: 1; min-width: 0; background: transparent; border: 0; color: var(--text); font: inherit; font-size: 16px; outline: none; }
   form#ask input::placeholder { color: var(--muted); }
@@ -131,6 +133,7 @@
 <footer>
   <button id="talk" aria-label="Start talking"><span class="halo"></span><span class="orb"></span></button>
   <div id="hint" role="status">Tap to start</div>
+  <button id="endChat" type="button" hidden>End conversation</button>
   <form id="ask" autocomplete="off"><input id="typed" placeholder="Or type to ask anything" aria-label="Type a question"><button aria-label="Send" disabled>↑</button></form>
 </footer>
 <script>
@@ -139,6 +142,10 @@ const empty = $("empty"), button = $("talk"), hint = $("hint"), chip = $("chip")
 // ponytail: fixed loudness thresholds (0..1 RMS); tune here if a room cuts turns short or hears echoes.
 const SPEECH = 0.045, BARGE = 0.12, END_SILENCE = 700, MIN_SPEECH = 450, MAX_TURN = 60_000, IDLE_PAUSE = 45_000, AFTER_SPEAKING = 700;
 let floor = 0.01, deaf = 0; // the room's quiet level, and a moment after it speaks when it doesn't listen
+// ponytail: echo-aware barge-in. While it speaks, the mic hears some of its own voice even with echo
+// cancellation; that level is tracked and you must be clearly louder than it, for 300 ms, to cut in.
+let echo = 0.03, clipStartedAt = 0, spokeUntil = 0;
+const ECHO_RATIO = 2.5, BARGE_HOLD = 300, CLIP_ONSET = 350, TAP_GRACE = 5000;
 
 let endAfterSpeech = false, on = false, phase = "off", stream, mic, analyser, data, recorder, chunks = [], speechStart = 0, lastLoud = 0, listenSince = 0, loopTimer;
 let player, current, currentBytes, queue = [], playing = false, generation = 0, controller, later = [];
@@ -149,7 +156,8 @@ function set(next, text) {
   document.body.className = { off: "idle", listening: "listening", hearing: "listening", thinking: "waiting", speaking: "speaking" }[next];
   chip.textContent = { off: "Ready", listening: "Listening", hearing: "Hearing you", thinking: "Thinking", speaking: "Speaking" }[next];
   hint.textContent = text ?? { off: "Tap to start", listening: "Listening… tap to stop", hearing: "Go on…", thinking: "One sec…", speaking: "Talk over me to interrupt" }[next];
-  button.setAttribute("aria-label", on ? "Stop the conversation" : "Start talking");
+  button.setAttribute("aria-label", !on ? "Start talking" : phase === "hearing" ? "Send now" : "Interrupt");
+  $("endChat").hidden = !on;
 }
 function el(tag, cls, text) { const n = document.createElement(tag); n.className = cls; if (text) n.textContent = text; return n; }
 function add(node) { empty.remove(); thread.append(node); thread.scrollTo({ top: thread.scrollHeight, behavior: "smooth" }); return node; }
@@ -180,7 +188,7 @@ async function playQueue() {
       await new Promise((done) => {
         const source = player.createBufferSource();
         source.buffer = buffer; source.connect(player.destination); source.onended = done;
-        current = source; source.start();
+        current = source; source.start(); clipStartedAt = Date.now();
         if (turnEndedAt) { // time to first audio, measured here on the phone
           const ms = Date.now() - turnEndedAt; turnEndedAt = 0;
           fetch("/api/metric", { method: "POST", body: JSON.stringify({ ms }) }).catch(() => {});
@@ -228,6 +236,7 @@ function record() {
   recorder.start();
 }
 function listen() {
+  echo = Math.max(0.02, echo * 0.5); // relearn the echo level for the next reply
   record(); speechStart = 0; lastLoud = 0; listenSince = Date.now(); deaf = Date.now() + AFTER_SPEAKING; set("listening");
   // News that arrived while you were talking plays now.
   if (later.length) { const news = later; later = []; news.forEach(speak); }
@@ -244,15 +253,19 @@ function tick() {
   document.documentElement.style.setProperty("--level", Math.min(1, rms * 9).toFixed(2));
   if (phase === "thinking") return; // while it works out a reply, only a tap interrupts: a cough must not lose it
   if (phase === "speaking") {
-    // Barge-in: you talking over it stops it and starts your turn. Louder bar so it doesn't hear itself.
-    if (rms > BARGE) {
+    spokeUntil = now;
+    if (now - clipStartedAt < CLIP_ONSET) return; // each clip's first moment is loud on the mic; never a barge-in
+    const bar = Math.max(BARGE, echo * ECHO_RATIO);
+    if (rms > bar) {
       speechStart ||= now;
-      if (now - speechStart > 220) {
+      if (now - speechStart > BARGE_HOLD) {
         resumable = [currentBytes, ...queue].filter(Boolean); // in case it was only a cough (replays this sentence)
-        hush(); controller?.abort(); listen(); speechStart = now; set("hearing");
+        hush(); controller?.abort(); listen(); speechStart = now; set("hearing", "Go ahead, I stopped");
       }
+    } else {
+      speechStart = 0;
+      echo = echo * 0.95 + rms * 0.05; // how loud its own voice is on the mic right now
     }
-    else speechStart = 0;
     return;
   }
   if (phase === "listening" || phase === "hearing") {
@@ -358,11 +371,15 @@ form.addEventListener("submit", (event) => {
   converse("You typed", (signal) => fetch("/api/text", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }), signal }));
 });
 
+// The orb never hangs up by accident: a tap interrupts, or sends what you're saying. "End" or "bye" ends.
 button.addEventListener("click", () => {
   if (!on) begin().catch((e) => end("Microphone unavailable: " + e.message));
-  else if (phase === "speaking" || phase === "thinking") { hush(); controller?.abort(); listen(); }
+  else if (phase === "speaking" || phase === "thinking") { hush(); controller?.abort(); listen(); set("listening", "Go ahead, I'm listening"); }
+  else if (phase === "hearing") send(); // you're done: send now instead of waiting for the pause
+  else if (Date.now() - spokeUntil < TAP_GRACE) set("listening", "Go ahead, I'm listening"); // it had just stopped; you meant to cut in
   else end("Stopped. Tap to talk again.");
 });
+$("endChat").addEventListener("click", () => end("Ended. Tap to talk again."));
 set("off");
 </script>
 </body>
