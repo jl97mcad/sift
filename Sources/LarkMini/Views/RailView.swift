@@ -41,9 +41,13 @@ struct RailView: View {
                     }
                     IconButton(symbol: "plus", help: "Find and pin a chat") { store.openSearch() }
                 }
-                .padding(.vertical, 2)
+                .padding(.vertical, 8)
                 .frame(maxWidth: .infinity)
             }
+            // Fade the edges so a chat cut off by the buttons below reads as "scroll for more".
+            .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.05),
+                                         .init(color: .black, location: 0.92), .init(color: .clear, location: 1)],
+                                 startPoint: .top, endPoint: .bottom))
 
             VStack(spacing: 4) {
                 IconButton(symbol: "magnifyingglass", help: "Find a chat (⌘K)") { store.openSearch() }
@@ -121,6 +125,7 @@ struct SeatRailItem: View {
                     .background {
                         if seat.needsYouUnseen { AttentionPulse(size: 36) }
                     }
+                    .background { if store.voice.seatId == seat.id { VoiceHalo(voice: store.voice, size: 30) } }
                     .overlay(alignment: .topTrailing) {
                         if seat.attention != nil && !seat.needsYouUnseen { UnreadDot(size: 6).offset(x: 3, y: -2) }
                     }
@@ -137,7 +142,8 @@ struct SeatRailItem: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(seat.attentionSummary.map { seat.fullName + " · " + $0 } ?? seat.fullName)
+        .help((seat.attentionSummary.map { seat.fullName + " · " + $0 } ?? seat.fullName)
+              + (store.seat?.id == seat.id ? " · ⌃⌥V to talk" : ""))
         .accessibilityLabel(seat.attentionSummary.map { seat.label + ", " + $0 } ?? seat.label)
         .onDrag { NSItemProvider(object: ("seat:" + seat.id) as NSString) }
         .onDrop(of: [.text], isTargeted: Binding(
