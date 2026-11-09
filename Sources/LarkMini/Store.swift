@@ -74,6 +74,7 @@ final class Store: ObservableObject {
     var attentionSummary: String? { seats.lazy.compactMap { seat in seat.attentionSummary.map { "\(seat.label) · \($0)" } }.first }
     var controlAttention: String? { seats.lazy.compactMap(\.attention).first }
 
+    let voice = VoiceMode()
     let tokens = TokenStore()
     private(set) lazy var api = LarkAPI(tokens: tokens)
     let stateFile = StateFile.shared
@@ -105,6 +106,7 @@ final class Store: ObservableObject {
         drafts = saved.chats
         SeatSession.migrateSeenLists(to: state.control)
         setSeats(state.seats)
+        voice.store = self
         // Agents first: the panel opens on the first seat when there is one.
         selectedSeatId = seats.first?.id
         controlOpen = !seats.isEmpty

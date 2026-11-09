@@ -33,6 +33,7 @@ enum CLI {
             case "control": return try await control(rest)
             case "agents": return try await agents(rest)
             case "doctor": return try await doctor(rest)
+            case "voice": return await voice(rest)
             case "open": return openApp()
             case "selftest": return selftest()
             case "help", "--help", "-h": print(usage); return 0
@@ -472,6 +473,40 @@ enum CLI {
 
     // MARK: - Output
 
+    /// The OpenRouter key for voice, and a round trip that proves it: speak a line, hear it back.
+    private static func voice(_ args: [String]) async -> Int32 {
+        switch args.first ?? "status" {
+        case "key":
+            guard args.count > 1, args[1] == "-" else { return fail("voice key reads the key from stdin: sift voice key -") }
+            let key = String(decoding: FileHandle.standardInput.readDataToEndOfFile(), as: UTF8.self)
+            do { try SpeechAPI.saveKey(key) } catch { return fail(error.localizedDescription) }
+            return ok(["ok": true, "key_file": SpeechAPI.keyFile.path])
+        case "status":
+            return ok(["ok": true, "has_key": SpeechAPI.storedKey() != nil, "hotkey": "Option-Shift-Space",
+                       "transcription_model": SpeechAPI.transcriptionModel, "speech_model": SpeechAPI.speechModel])
+        case "test":
+            guard let key = SpeechAPI.storedKey() else { return fail("No OpenRouter key; run: sift voice key -") }
+            let line = args.count > 1 ? args[1] : "Sift voice is working."
+            let api = SpeechAPI(key: key)
+            do {
+                let started = Date()
+                let audio = try await api.speak(line)
+                let spoke = Date().timeIntervalSince(started)
+                let heard = try await api.transcribe(audio, filename: "speech.mp3")
+                let total = Date().timeIntervalSince(started)
+                let same = heard.lowercased().filter(\.isLetter) == line.lowercased().filter(\.isLetter)
+                let payload: [String: Any] = ["ok": same, "said": line, "heard": heard,
+                                              "speech_seconds": String(format: "%.2f", spoke),
+                                              "round_trip_seconds": String(format: "%.2f", total)]
+                return same ? ok(payload) : { printJSON(payload); return 1 }()
+            } catch {
+                return fail(error.localizedDescription)
+            }
+        default:
+            return fail("voice: key - | status | test [\"line\"]")
+        }
+    }
+
     private static func ok(_ payload: [String: Any]) -> Int32 {
         printJSON(payload)
         return 0
@@ -520,6 +555,9 @@ enum CLI {
       control   The Control seat (the agent named Control, else the first)
                   set --agent-id ID [--host H] [--provider paseo] [--title T]
                   status | send "text" | logs [--tail N] | digest | asks | off
+      voice     Talk to the open agent seat: hold Option-Shift-Space (OpenRouter)
+                  key -                                read the OpenRouter key from stdin
+                  status | test ["line"]               speak a line and hear it back
       doctor    Check credentials, token and chat access
       open      Open the Sift app
       logout    Forget the current session

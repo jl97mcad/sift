@@ -146,6 +146,7 @@ struct ControlChatView: View {
                     .focused($composing)
                     .onSubmit { if canSend { Task { await seat.send() } } }
                     .accessibilityLabel("Message \(seat.label)")
+                VoiceButton(voice: store.voice, seat: seat)
                 Button { Task { await seat.send() } } label: {
                     Image(systemName: seat.sending ? "clock" : "arrow.up")
                         .font(.system(size: 13, weight: .semibold)).frame(width: 28, height: 28)
@@ -438,6 +439,48 @@ private struct ReplyBlockView: View {
                     .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+        }
+    }
+}
+
+/// Talk to this seat: tap to listen, tap to send, tap to stop the voice. ⌥⇧Space does the same
+/// from anywhere, and holding it is push-to-talk.
+struct VoiceButton: View {
+    @ObservedObject var voice: VoiceMode
+    @ObservedObject var seat: SeatSession
+
+    private var phase: VoiceMode.Phase { voice.seatId == seat.id ? voice.phase : .idle }
+
+    var body: some View {
+        Button { voice.toggle(seat) } label: {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold)).frame(width: 28, height: 28)
+                .foregroundStyle(phase == .listening ? Color.black : SiftStyle.secondary)
+                .background(phase == .listening ? SiftStyle.green : Color.white.opacity(0.05), in: Circle())
+                .frame(width: 32, height: 32)
+        }
+        .buttonStyle(.plain)
+        .disabled(phase == .transcribing)
+        .help(help).accessibilityLabel(help)
+    }
+
+    private var icon: String {
+        switch phase {
+        case .idle: return "mic"
+        case .listening: return "mic.fill"
+        case .transcribing: return "ellipsis"
+        case .waiting: return "waveform"
+        case .speaking: return "speaker.wave.2.fill"
+        }
+    }
+
+    private var help: String {
+        switch phase {
+        case .idle: return "Talk to \(seat.label) (hold ⌥⇧Space)"
+        case .listening: return "Listening · tap to send"
+        case .transcribing: return "Writing down what you said"
+        case .waiting: return "Waiting for \(seat.label) · tap to talk again"
+        case .speaking: return "Speaking · tap to stop"
         }
     }
 }

@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import SwiftUI
 
 @MainActor
@@ -10,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var outsideMonitor: Any?
     private var hotKey: GlobalHotKey?
+    private var voiceKey: GlobalHotKey?
     private var editMonitor: Any?
     private var keyMonitor: Any?
 
@@ -48,6 +50,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let hotKey = GlobalHotKey { [weak self] in self?.panelController.toggle() }
         hotKey.register()
         self.hotKey = hotKey
+        let voice = store.voice
+        let voiceKey = GlobalHotKey(modifiers: optionKey | shiftKey, id: 2,
+                                    action: { voice.keyDown() }, release: { voice.keyUp() })
+        voiceKey.register()
+        self.voiceKey = voiceKey
         if store.isExpanded {
             panelController.expand()
         }
