@@ -898,7 +898,10 @@ final class Store: ObservableObject {
             if started { session.startWatch() }
             return session
         }
-        for session in seats where !next.contains(where: { $0 === session }) { session.stopWatch() }
+        for session in seats where !next.contains(where: { $0 === session }) {
+            session.stopWatch()
+            voice.cancel(seat: session.id)
+        }
         seats = next
         seatChanges = Dictionary(uniqueKeysWithValues: next.map { session in
             (session.id, session.objectWillChange.sink { [weak self] in self?.objectWillChange.send() })

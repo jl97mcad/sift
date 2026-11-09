@@ -53,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let voice = store.voice
         let voiceKey = GlobalHotKey(modifiers: optionKey | shiftKey, id: 2,
                                     action: { voice.keyDown() }, release: { voice.keyUp() })
-        voiceKey.register()
+        if !voiceKey.register() { store.errorText = "Option-Shift-Space is taken by another app; use the mic button to talk." }
         self.voiceKey = voiceKey
         if store.isExpanded {
             panelController.expand()

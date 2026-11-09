@@ -37,4 +37,21 @@ final class VoiceTests: XCTestCase {
         XCTAssertTrue(long.allSatisfy { $0.count <= 100 })
         XCTAssertEqual(long.joined(separator: " ").count, String(repeating: "This sentence is about forty characters. ", count: 20).trimmingCharacters(in: .whitespaces).count)
     }
+
+    func testNothingInsideAnOpenCodeBlockIsSpokenEarly() {
+        let text = "Run this.\n```bash\nrm -rf /tmp/x\nmore\n"
+        XCTAssertEqual(String(text.prefix(Spoken.settledLength(text))), "Run this.\n")
+        let closed = text + "```\nDone.\n"
+        XCTAssertEqual(Spoken.settledLength(closed), closed.count)
+        XCTAssertFalse(Spoken.plain(closed).contains("rm -rf"))
+    }
+
+    func testEmphasisSplitAcrossPiecesIsNotReadOut() {
+        XCTAssertEqual(Spoken.plain("**Shop GMV is up."), "Shop GMV is up.")
+    }
+
+    func testRoundTripComparesWordsNotPunctuation() {
+        XCTAssertTrue(Spoken.sameWords("Sift voice is working.", " sift voice is working"))
+        XCTAssertFalse(Spoken.sameWords("Sift voice is working.", "Something else entirely"))
+    }
 }

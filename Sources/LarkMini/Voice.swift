@@ -94,6 +94,7 @@ enum Spoken {
             (#"(?m)^\s*\|?[-:| ]+\|[-:| ]*$"#, ""),         // table rules
             (#"\|"#, ", "),
             (#"(\*\*|__|\*|_|~~)(?=\S)(.+?)(?<=\S)\1"#, "$2"),
+            (#"\*\*|__|~~"#, ""),                          // emphasis split across pieces
             (#"[ \t]+"#, " "),
         ]
         for (pattern, template) in rules {
@@ -102,10 +103,17 @@ enum Spoken {
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private static let sentenceEnd = try! Regex(#"[.!?:;]["')\]]*\s|\n"#)
+
     /// End of the last complete sentence: what can be spoken while the agent is still writing.
+    /// Never inside an open code block, whose lines must not be read out.
     static func settledLength(_ text: String) -> Int {
-        guard let match = text.range(of: #"[.!?:;]["')\]]*\s|\n"#, options: [.regularExpression, .backwards]) else { return 0 }
-        return text.distance(from: text.startIndex, to: match.upperBound)
+        var text = text[...]
+        let fences = text.ranges(of: "```")
+        if fences.count % 2 == 1, let open = fences.last { text = text[..<open.lowerBound] }
+        // Foundation ignores .backwards for regular expressions, so take the last match.
+        guard let match = text.matches(of: sentenceEnd).last else { return 0 }
+        return text.distance(from: text.startIndex, to: match.range.upperBound)
     }
 
     /// Sentences, joined up to a comfortable length so short ones share one request.
@@ -125,10 +133,20 @@ enum Spoken {
         if !current.isEmpty { pieces.append(current) }
         return pieces
     }
+
+    /// Whisper may change case and punctuation; the words must survive.
+    static func sameWords(_ said: String, _ heard: String) -> Bool {
+        func words(_ text: String) -> [String] {
+            text.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init)
+        }
+        let expected = words(said), got = Set(words(heard))
+        guard !expected.isEmpty else { return false }
+        return Double(expected.filter(got.contains).count) / Double(expected.count) >= 0.8
+    }
 }
 
-/// Talk to a seat: hold the hotkey (or tap it twice, or the mic button) to speak; its reply is read
-/// out sentence by sentence as it arrives. Speaking again cuts the voice off.
+/// Talk to a seat: hold the hotkey (or tap it, talk, tap again, or use the mic button); its reply
+/// is read out sentence by sentence as it arrives. Talking again cuts the voice off.
 @MainActor
 final class VoiceMode: ObservableObject {
     enum Phase: Equatable { case idle, listening, transcribing, waiting, speaking }
@@ -139,29 +157,33 @@ final class VoiceMode: ObservableObject {
     /// Tells the agent its reply will be heard, not read.
     nonisolated static let preamble = "(Spoken through Sift voice. Reply in a few short plain sentences that read well aloud; no tables or code unless asked.)\n\n"
     private static let holdThreshold: TimeInterval = 0.4
-    private static let followFor: TimeInterval = 15 * 60
+    private static let followFor: UInt64 = 15 * 60
+    /// A reply that stopped changing while the seat shows no turn is treated as finished.
+    private static let quietFor: UInt64 = 4
 
     weak var store: Store?
     private var recorder: AVAudioRecorder?
     private var recording: URL { FileManager.default.temporaryDirectory.appendingPathComponent("sift-voice.m4a") }
     private var pressedAt: Date?
-    private var keyHeld = false
 
     private var following: AnyCancellable?
-    private var followUntil = Date.distantPast
+    private var followGeneration = 0
+    private var expiry: Task<Void, Never>?
+    private var quiet: Task<Void, Never>?
+    private var sawRunning = false
     private var baseline = Set<String>()
+    /// Per reply, how much of its raw Markdown has been spoken. Raw text only grows, so it is stable.
     private var spokenUpTo: [String: Int] = [:]
     private var lines: [String] = []
     private var speaker: Task<Void, Never>?
     private var player: AVAudioPlayer?
+    private var playerDelegate: PlayerDelegate?
     private var playerDone: (() -> Void)?
-    private let playerDelegate = PlayerDelegate()
 
-    // MARK: Hotkey: hold to talk, or a quick tap to start and another to send.
+    // MARK: Hotkey: hold to talk, or tap to start and tap again to send.
+    // Carbon hot keys do not auto-repeat, so a press while listening is always the second tap.
 
     func keyDown() {
-        guard !keyHeld else { return }
-        keyHeld = true
         if phase == .listening { finish(); return }
         guard let seat = store?.seat else { store?.errorText = "Add an agent seat to talk to."; return }
         start(seat)
@@ -169,7 +191,6 @@ final class VoiceMode: ObservableObject {
     }
 
     func keyUp() {
-        keyHeld = false
         if phase == .listening, let pressedAt, Date().timeIntervalSince(pressedAt) > Self.holdThreshold { finish() }
         pressedAt = nil
     }
@@ -184,8 +205,7 @@ final class VoiceMode: ObservableObject {
     }
 
     func start(_ seat: SeatSession) {
-        stopSpeaking()
-        stopFollowing()
+        guard phase != .transcribing, phase != .listening else { return }
         guard SpeechAPI.storedKey() != nil else {
             store?.errorText = "Voice needs an OpenRouter key: sift voice key - (key on stdin)."
             return
@@ -199,6 +219,8 @@ final class VoiceMode: ObservableObject {
             store?.errorText = "Sift can't use the microphone. Allow it in System Settings → Privacy & Security → Microphone."
             return
         }
+        stopSpeaking()
+        stopFollowing()
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 16_000, AVNumberOfChannelsKey: 1,
             AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
@@ -221,8 +243,10 @@ final class VoiceMode: ObservableObject {
         recorder.stop()
         self.recorder = nil
         NSSound(named: "Pop")?.play()
-        guard length > 0.3, let seat = store?.seats.first(where: { $0.id == seatId }),
-              let key = SpeechAPI.storedKey(), let audio = try? Data(contentsOf: recording) else {
+        let audio = try? Data(contentsOf: recording)
+        try? FileManager.default.removeItem(at: recording)
+        guard length > 0.3, let audio, let seat = store?.seats.first(where: { $0.id == seatId }),
+              let key = SpeechAPI.storedKey() else {
             phase = .idle
             return
         }
@@ -230,13 +254,13 @@ final class VoiceMode: ObservableObject {
         Task {
             do {
                 let text = try await SpeechAPI(key: key).transcribe(audio, filename: "speech.m4a")
-                guard phase == .transcribing else { return }
+                guard phase == .transcribing else { return } // cancelled meanwhile
                 guard !text.isEmpty else { phase = .idle; return }
                 follow(seat)
                 if await !seat.send(text: Self.preamble + text) { stopFollowing() }
             } catch {
                 store?.errorText = "Voice: \(error.localizedDescription)"
-                phase = .idle
+                if phase == .transcribing { phase = .idle }
             }
         }
     }
@@ -246,30 +270,47 @@ final class VoiceMode: ObservableObject {
     private func follow(_ seat: SeatSession) {
         baseline = Set(seat.messages.filter(\.isAssistant).map(\.id))
         spokenUpTo = [:]
-        followUntil = Date().addingTimeInterval(Self.followFor)
+        sawRunning = false
+        followGeneration += 1
+        let generation = followGeneration
         phase = .waiting
         following = seat.$messages.combineLatest(seat.$status, seat.$sending).receive(on: RunLoop.main)
             .sink { [weak self] messages, status, sending in
                 MainActor.assumeIsolated { self?.heard(messages, running: status == "running" || sending) }
             }
+        expiry = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.followFor * 1_000_000_000)
+            guard let self, !Task.isCancelled, self.followGeneration == generation else { return }
+            self.stopFollowing()
+        }
     }
 
-    private func heard(_ messages: [AgentMessage], running: Bool) {
-        guard Date() < followUntil else { stopFollowing(); return }
+    private func heard(_ messages: [AgentMessage], running: Bool, settled: Bool = false) {
+        guard following != nil else { return }
+        if running { sawRunning = true }
         let replies = messages.filter { $0.isAssistant && !baseline.contains($0.id) }
+        // A status can lag the reply; the turn is over once it ran and stopped, or went quiet.
+        let over = !running && !replies.isEmpty && (sawRunning || settled)
         for (index, reply) in replies.enumerated() {
-            let text = Spoken.plain(reply.text)
-            let finished = index < replies.count - 1 || !running
-            let ready = finished ? text.count : Spoken.settledLength(text)
+            let raw = reply.text
+            let ready = index < replies.count - 1 || over ? raw.count : Spoken.settledLength(raw)
             let done = spokenUpTo[reply.id] ?? 0
             guard ready > done else { continue }
             spokenUpTo[reply.id] = ready
-            let start = text.index(text.startIndex, offsetBy: done)
-            let end = text.index(text.startIndex, offsetBy: ready)
-            say(String(text[start..<end]))
+            let piece = raw[raw.index(raw.startIndex, offsetBy: done)..<raw.index(raw.startIndex, offsetBy: ready)]
+            say(Spoken.plain(String(piece)))
         }
-        // The turn is over once a reply exists and the agent stopped; what is queued still plays.
-        if !running, !replies.isEmpty { stopFollowing() }
+        quiet?.cancel()
+        if over {
+            stopFollowing()
+        } else if !running, !replies.isEmpty {
+            let generation = followGeneration
+            quiet = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: Self.quietFor * 1_000_000_000)
+                guard let self, !Task.isCancelled, self.followGeneration == generation else { return }
+                self.heard(messages, running: false, settled: true)
+            }
+        }
     }
 
     private func say(_ text: String) {
@@ -301,18 +342,23 @@ final class VoiceMode: ObservableObject {
         }
     }
 
+    /// Plays one clip. Each clip resumes once: when it ends, fails, is stopped, or a little after
+    /// its length if the player never reports back (an output device change).
     private func play(_ audio: Data) async {
-        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
-            guard let player = try? AVAudioPlayer(data: audio) else { done.resume(); return }
+        guard let player = try? AVAudioPlayer(data: audio) else { return }
+        let delegate = PlayerDelegate()
+        player.delegate = delegate
+        self.player = player
+        playerDelegate = delegate
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             var resumed = false
-            let finish = { if !resumed { resumed = true; done.resume() } }
-            playerDone = finish
-            playerDelegate.finished = { [weak self] in MainActor.assumeIsolated { self?.playerDone?(); self?.playerDone = nil } }
-            player.delegate = playerDelegate
-            self.player = player
-            if !player.play() { finish() }
+            let resume = { if !resumed { resumed = true; continuation.resume() } }
+            delegate.finished = resume
+            playerDone = resume
+            DispatchQueue.main.asyncAfter(deadline: .now() + player.duration + 1, execute: resume)
+            if !player.play() { resume() }
         }
-        player = nil
+        if self.player === player { self.player = nil; playerDelegate = nil; playerDone = nil }
     }
 
     func stopSpeaking() {
@@ -323,31 +369,37 @@ final class VoiceMode: ObservableObject {
         player = nil
         playerDone?()
         playerDone = nil
+        playerDelegate = nil
         if phase == .speaking { phase = following == nil ? .idle : .waiting }
     }
 
     private func stopFollowing() {
         following = nil
+        expiry?.cancel()
+        quiet?.cancel()
+        followGeneration += 1
         if phase == .waiting { phase = .idle }
     }
 
-    /// Stops everything, e.g. when the seat goes away.
-    func cancel() {
+    /// Stops everything when the seat being talked to goes away.
+    func cancel(seat id: String) {
+        guard seatId == id else { return }
         recorder?.stop()
         recorder = nil
+        try? FileManager.default.removeItem(at: recording)
         stopSpeaking()
         stopFollowing()
         phase = .idle
+        seatId = nil
     }
 }
 
+/// Calls back on the main thread; AVAudioPlayer holds its delegate weakly, so VoiceMode keeps it.
 private final class PlayerDelegate: NSObject, AVAudioPlayerDelegate {
     var finished: (() -> Void)?
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        let finished = finished
-        DispatchQueue.main.async { finished?() }
-    }
-    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) { done() }
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) { done() }
+    private func done() {
         let finished = finished
         DispatchQueue.main.async { finished?() }
     }

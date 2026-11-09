@@ -494,7 +494,7 @@ enum CLI {
                 let spoke = Date().timeIntervalSince(started)
                 let heard = try await api.transcribe(audio, filename: "speech.mp3")
                 let total = Date().timeIntervalSince(started)
-                let same = heard.lowercased().filter(\.isLetter) == line.lowercased().filter(\.isLetter)
+                let same = Spoken.sameWords(line, heard)
                 let payload: [String: Any] = ["ok": same, "said": line, "heard": heard,
                                               "speech_seconds": String(format: "%.2f", spoke),
                                               "round_trip_seconds": String(format: "%.2f", total)]

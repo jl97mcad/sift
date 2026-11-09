@@ -155,7 +155,9 @@ Every command prints one JSON object and exits non-zero on failure.
 
 - Everything stays on your Mac, in `~/Library/Application Support/Sift/`:
   `credentials.json` (app secret and tokens), `state.json` (pins, settings,
-  agent seats) and `cache.json` (chat list and previews), each mode 0600.
+  agent seats), `cache.json` (chat list and previews) and, if you use voice,
+  `openrouter-key`, each mode 0600. A voice recording is deleted as soon as
+  it is sent for transcription.
   Device-only preferences use macOS user defaults.
 - Sift talks only to Lark's Open API and, for each agent seat, to that
   Paseo daemon. Voice, when you use it, sends your recording and the reply
