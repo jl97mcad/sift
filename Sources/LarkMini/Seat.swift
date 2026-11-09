@@ -61,6 +61,8 @@ final class SeatSession: ObservableObject, Identifiable {
     }
 
     var label: String { config.label }
+    /// The full Paseo title for hover, or the chosen name when there is no title.
+    var fullName: String { config.title.isEmpty ? config.label : config.title }
     var palette: FacePalette { config.palette }
     var isOpen: Bool { store.map { $0.controlOpen && $0.selectedSeatId == id } ?? false }
 

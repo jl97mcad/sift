@@ -33,14 +33,16 @@ enum ChatTitle {
             tags.append(String(name[range].dropFirst().dropLast()).trimmingCharacters(in: .whitespaces))
             name.removeSubrange(range)
         }
-        // A short leading label before a bar: "Int | Full Crumbs".
-        if let bar = name.range(of: #"^\s*[A-Za-z]{2,8}\s*\|\s*"#, options: .regularExpression) {
+        // A known short label before a bar: "Int | Full Crumbs". Other words before a bar are the name.
+        if let bar = name.range(of: #"^\s*(?i:int|internal|ext|external|test|wip)\s*\|\s*"#, options: .regularExpression) {
             tags.insert(name[bar].replacingOccurrences(of: "|", with: "").trimmingCharacters(in: .whitespaces), at: 0)
             name.removeSubrange(bar)
         }
         name = name.replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
             .trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: "-–—|/")))
-        return (name, tags.filter { !$0.isEmpty }.map { $0.uppercased() })
+        var seen = Set<String>()
+        let unique = tags.map { $0.uppercased() }.filter { !$0.isEmpty && seen.insert($0).inserted }
+        return (name, unique)
     }
 
     /// First letters of the first two real words; dashes, slashes and symbols are not words.

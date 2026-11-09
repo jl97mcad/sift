@@ -11,7 +11,7 @@ struct ControlChatView: View {
             HStack(spacing: 10) {
                 FaceIcon(size: 32, palette: seat.palette)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(seat.label).font(.system(size: 20, weight: .semibold)).lineLimit(1).help(seat.config.title)
+                    Text(seat.label).font(.system(size: 20, weight: .semibold)).lineLimit(1).help(seat.fullName)
                     Text(seat.config.title == seat.label ? "Paseo" : seat.config.title)
                         .font(.system(size: 11)).foregroundStyle(SiftStyle.secondary).lineLimit(1)
                 }

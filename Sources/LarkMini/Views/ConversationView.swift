@@ -51,7 +51,7 @@ struct ConversationView: View {
             AvatarView(chat: chat, size: 32)
             VStack(alignment: .leading, spacing: 4) {
                 Text(chat.displayName).font(.system(size: 16, weight: .semibold)).lineLimit(1).help(chat.name)
-                Text((chat.isP2P ? "Lark · Direct message" : "Lark · Group conversation") + chat.tags.map { " · " + $0.capitalized }.joined())
+                Text((chat.isP2P ? "Lark · Direct message" : "Lark · Group conversation") + chat.tags.map { " · " + $0 }.joined())
                     .font(.system(size: 11)).foregroundStyle(SiftStyle.secondary)
             }
             .panelDragHandle().help("Drag to move Sift")

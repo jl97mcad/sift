@@ -75,6 +75,8 @@ final class VoiceTests: XCTestCase {
         XCTAssertEqual(ChatTitle.split("Devs - Agents Room [INTERNAL]").tags, ["INTERNAL"])
         XCTAssertEqual(ChatTitle.split("Int | Full Crumbs x Outlandish").name, "Full Crumbs x Outlandish")
         XCTAssertEqual(ChatTitle.split("Int | Full Crumbs x Outlandish").tags, ["INT"])
+        XCTAssertEqual(ChatTitle.split("Design | Review").name, "Design | Review")
+        XCTAssertEqual(ChatTitle.split("Int | Team [INT]").tags, ["INT"])
         XCTAssertEqual(ChatTitle.initials("Devs - Agents Room"), "DA")
         XCTAssertEqual(ChatTitle.initials("Mattel / LCG"), "ML")
         XCTAssertEqual(ChatTitle.initials("D-"), "D")
