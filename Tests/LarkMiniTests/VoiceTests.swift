@@ -80,5 +80,6 @@ final class VoiceTests: XCTestCase {
         XCTAssertEqual(ChatTitle.initials("Devs - Agents Room"), "DA")
         XCTAssertEqual(ChatTitle.initials("Mattel / LCG"), "ML")
         XCTAssertEqual(ChatTitle.initials("D-"), "D")
+        XCTAssertEqual(ChatTitle.initials("Jon's Control"), "JC")
     }
 }

@@ -47,7 +47,8 @@ enum ChatTitle {
 
     /// First letters of the first two real words; dashes, slashes and symbols are not words.
     static func initials(_ name: String) -> String {
-        let words = name.split { !$0.isLetter && !$0.isNumber }.filter { $0.first?.isLetter == true || $0.first?.isNumber == true }
+        let words = name.replacingOccurrences(of: #"['’]"#, with: "", options: .regularExpression)
+            .split { !$0.isLetter && !$0.isNumber }.filter { $0.first?.isLetter == true || $0.first?.isNumber == true }
         let letters = words.prefix(2).compactMap(\.first).map(String.init).joined()
         return letters.isEmpty ? "?" : letters.uppercased()
     }
