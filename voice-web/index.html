@@ -192,12 +192,12 @@ async function finish() {
   document.documentElement.style.setProperty("--level", 0);
   const done = new Promise((resolve) => (recorder.onstop = resolve));
   recorder.stop();
-  audioMode("playback");
   // The acknowledgement plays inside the tap, which also unlocks audio for the reply on iPhone.
   enqueue("/api/ack", mine);
   await done;
   stream.getTracks().forEach((track) => track.stop());
   stream = null;
+  audioMode("playback"); // after the mic is off, so replies use the speaker
   const view = newTurn();
   const settle = (text) => { if (turn === mine) set("idle", text); };
   try {
@@ -265,12 +265,18 @@ function press() {
   }
 }
 // Tap to start and tap to send, or hold while you talk and let go to send.
-button.addEventListener("pointerdown", (event) => { event.preventDefault(); press(); });
-button.addEventListener("pointerup", () => {
+button.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  button.setPointerCapture?.(event.pointerId);
+  press();
+});
+const release = () => {
   // A hold sends on release; a slow tap (let go before the mic had been open a moment) keeps listening.
   if (pressedAt && state === "listening" && Date.now() - listeningAt > 700) finish();
   pressedAt = 0;
-});
+};
+button.addEventListener("pointerup", release);
+button.addEventListener("pointercancel", release);
 button.addEventListener("keydown", (event) => {
   if ((event.key === " " || event.key === "Enter") && !event.repeat) { event.preventDefault(); press(); }
 });

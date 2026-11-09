@@ -55,8 +55,10 @@ async function talk(request, response) {
     agent.run(heard, { timeoutMs: 5 * 60_000 }).then(() => (finished = true), (error) => ((failure = error), (finished = true)));
 
     let speech = Promise.resolve();
+    let budget = 2000; // ponytail: characters spoken per turn; the rest stays on screen
     const say = (text) => {
       for (const piece of pieces(plain(text))) {
+        if ((budget -= piece.length) < 0) return;
         const clip = speakPiece(piece).catch((error) => (console.error(error), null));
         speech = speech.then(async () => {
           const data = await clip;
@@ -92,7 +94,7 @@ async function talk(request, response) {
       }
       if (done) break;
     }
-    await speech;
+    if (open) await speech; // a phone that hung up doesn't hold the next turn
     if (failure) emit({ type: "error", message: failure.message ?? String(failure) });
   } catch (error) {
     console.error(error);
