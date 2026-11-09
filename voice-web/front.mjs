@@ -74,6 +74,7 @@ export async function respond(config, history, userText, handlers, onText, { too
   history.push({ role: "user", content: userText });
   for (let round = 0; round < 3; round += 1) {
     const { text, calls } = await stream(config, history, onText, tools);
+    if (!tools) { history.push({ role: "assistant", content: text }); break; } // no tools offered: never run any
     history.push({ role: "assistant", content: text || null, ...(calls.length ? { tool_calls: calls } : {}) });
     if (!calls.length) break;
     for (const call of calls) {

@@ -5,7 +5,11 @@
 import { createServer } from "node:http";
 import { appendFile, readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import { createPaseoClient } from "@getpaseo/client";
+import { createPaseoApi } from "@getpaseo/client";
+import { createHostClient } from "@getpaseo/client/node";
+import { writeFile, unlink, chmod } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { isPhantom, pieces, plain, progressLine, settledLength, speakPiece, stepLabel, transcribe } from "./speech.mjs";
 import { respond, summarise, workersOf } from "./front.mjs";
 
@@ -14,15 +18,55 @@ const MAX_AUDIO = 20 * 1024 * 1024;
 const config = JSON.parse(await readFile(new URL("./config.json", import.meta.url), "utf8").catch(() =>
   readFile(new URL("./config.example.json", import.meta.url), "utf8")));
 const page = await readFile(new URL("./index.html", import.meta.url));
-const LOCAL = "ws://127.0.0.1:6767/ws";
+const LOCAL = "tcp://127.0.0.1:6767";
 const clients = new Map(); // one Paseo connection per daemon, opened on first use
 
+/**
+ * A Paseo daemon by any address the Paseo CLI takes: host:port, tcp://, ws://, or a relay://
+ * pairing address (how the server reaches a laptop that's off the tailnet or asleep).
+ */
 async function daemon(url = LOCAL) {
-  if (!clients.has(url)) {
-    const client = createPaseoClient({ url, clientId: "voice-front-door", connectTimeoutMs: 10_000 });
-    clients.set(url, client.connect().then(() => client).catch((error) => { clients.delete(url); throw error; }));
+  const address = url.startsWith("ws://") ? `tcp://${new URL(url).host}` : url;
+  if (!clients.has(address)) {
+    const host = createHostClient(address, { clientId: "voice-front-door", connectTimeoutMs: 15_000 });
+    clients.set(address, host.connect().then(() => createPaseoApi(host)).catch((error) => { clients.delete(address); throw error; }));
   }
-  return clients.get(url);
+  return clients.get(address);
+}
+
+/**
+ * A worker that isn't a Paseo session (OpenClaw, say): a configured command gets the prompt in a
+ * file whose path replaces {file}, and its output is the reply. Delivery to chat channels is the
+ * command's choice; OpenClaw's `agent` only replies to the caller unless --deliver is passed.
+ */
+/** The reply text inside a command's JSON, wherever it sits (OpenClaw nests it as terminalReply.text). */
+function replyIn(value) {
+  if (!value || typeof value !== "object") return null;
+  if (typeof value.terminalReply?.text === "string") return value.terminalReply.text;
+  if (typeof value.finalAssistantMessageRawText === "string") return value.finalAssistantMessageRawText;
+  if (typeof value.reply === "string") return value.reply;
+  for (const child of Object.values(value)) {
+    const found = replyIn(child);
+    if (found) return found;
+  }
+  return null;
+}
+
+async function runCommand(worker, prompt) {
+  const file = join(tmpdir(), `voice-task-${Date.now()}.txt`);
+  await writeFile(file, prompt);
+  await chmod(file, 0o644); // the command may run as another user
+  try {
+    const stdout = await new Promise((resolve, reject) => execFile("/bin/sh", ["-c", worker.command.replaceAll("{file}", file)],
+      { timeout: (worker.timeoutMinutes ?? 10) * 60_000, maxBuffer: 4 << 20 }, (error, out) => (error ? reject(error) : resolve(out))));
+    try {
+      return String(replyIn(JSON.parse(stdout)) ?? stdout).trim();
+    } catch {
+      return stdout.trim();
+    }
+  } finally {
+    await unlink(file).catch(() => {});
+  }
 }
 
 const history = [];
@@ -95,6 +139,19 @@ async function run(job) {
   job.status = "running";
   broadcast({ type: "job", job: view(job) });
   const prompt = `(${config.person}, by voice through their assistant. Do this, then reply in a few short plain sentences; your reply is summarised aloud.)\n\n${job.task}`;
+  if (job.worker.command) {
+    job.steps = [`Asking ${job.to}`];
+    broadcast({ type: "job", job: view(job) });
+    try {
+      job.reply = await runCommand(job.worker, prompt);
+      job.status = "done";
+    } catch (error) {
+      job.status = "failed";
+      job.reply = `It failed: ${error.message ?? error}`;
+    }
+    broadcast({ type: "job", job: view(job) });
+    return announce(job);
+  }
   try {
     const { client, agent: live } = await session(job.worker, job.plan);
     const agent = client.agents.ref(live.id);
@@ -148,10 +205,23 @@ async function run(job) {
     job.reply = `It couldn't start: ${error.message ?? error}`;
   }
   broadcast({ type: "job", job: view(job) });
+  return announce(job);
+}
+
+/** Speaks a finished job's result: a short summary, or an honest one-line fallback. */
+async function announce(job) {
   await serial(async () => {
-    const text = (await summarise(config, history, job).catch(() => "")) || `${job.to[0].toUpperCase()}${job.to.slice(1)} has answered. It's on the card.`;
+    const text = (await summarise(config, history, job).catch(() => "")) || fallbackLine(job);
     broadcast({ type: "say", text, audio: await voice(text) });
   });
+}
+
+/** A short honest line when a summary couldn't be made. */
+function fallbackLine(job) {
+  const who = job.to || "The worker";
+  const name = who[0].toUpperCase() + who.slice(1);
+  if (job.status === "failed") return `${name} didn't finish that one.`;
+  return job.reply ? `${name} has answered. It's on the card.` : `${name} finished but sent no reply.`;
 }
 
 /** One spoken turn, streamed back as lines of JSON: what was heard, the reply text and its speech. */

@@ -6,10 +6,35 @@
   "about": "One or two sentences about the person and how their work runs.",
   "frontModel": "anthropic/claude-haiku-5.5",
   "workers": [
-    { "name": "Control", "url": "ws://127.0.0.1:6767/ws", "seat": "control",
-      "use": "Plans, agents, PRs, deploys and getting things done", "handoff": "I'll ask Control" },
-    { "name": "plan lead", "url": "ws://127.0.0.1:6767/ws", "lead": true,
-      "use": "One plan's detail; needs the plan number", "handoff": "I'll check with that plan's lead" }
+    {
+      "name": "Control",
+      "url": "ws://127.0.0.1:6767/ws",
+      "seat": "control",
+      "use": "Plans, agents, PRs, deploys and getting things done",
+      "handoff": "I'll ask Control"
+    },
+    {
+      "name": "plan lead",
+      "url": "ws://127.0.0.1:6767/ws",
+      "lead": true,
+      "use": "One plan's detail; needs the plan number",
+      "handoff": "I'll check with that plan's lead"
+    },
+    {
+      "name": "OpenClaw",
+      "command": "sudo -n -u openclaw /opt/openclaw/bin/openclaw agent --json --message-file {file}",
+      "use": "Deep research across notes, meetings, email and memory",
+      "handoff": "Let me look deeper into that",
+      "timeoutMinutes": 10
+    },
+    {
+      "name": "Taro Twin",
+      "url": "relay://<the laptop's pairing address from `paseo daemon pair --json`>",
+      "seat": "taro-twin",
+      "use": "Things only the laptop can see; only while it's on"
+    }
   ],
-  "needs": { "command": "" }
+  "needs": {
+    "command": ""
+  }
 }
