@@ -54,4 +54,17 @@ final class VoiceTests: XCTestCase {
         XCTAssertTrue(Spoken.sameWords("Sift voice is working.", " sift voice is working"))
         XCTAssertFalse(Spoken.sameWords("Sift voice is working.", "Something else entirely"))
     }
+
+    func testWhisperInventionsForSilenceAreNotSent() {
+        XCTAssertTrue(VoiceMode.isPhantom(" you"))
+        XCTAssertTrue(VoiceMode.isPhantom("Thank you."))
+        XCTAssertTrue(VoiceMode.isPhantom(" ... "))
+        XCTAssertFalse(VoiceMode.isPhantom("Thank you, now queue the plan."))
+    }
+
+    func testLevelFollowsLoudness() {
+        XCTAssertEqual(VoiceMode.level(-160), 0)
+        XCTAssertEqual(VoiceMode.level(0), 1)
+        XCTAssertGreaterThan(VoiceMode.level(-20), VoiceMode.level(-40))
+    }
 }
