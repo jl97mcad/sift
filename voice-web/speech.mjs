@@ -7,7 +7,10 @@ const SUPPORT = join(homedir(), "Library", "Application Support", "Sift");
 const API = "https://openrouter.ai/api/v1";
 
 export async function key() {
-  const value = (await readFile(join(SUPPORT, "openrouter-key"), "utf8").catch(() => "")).trim();
+  // OPENROUTER_API_KEY, or a file named by OPENROUTER_KEY_FILE, or the Sift Mac app's key file.
+  if (process.env.OPENROUTER_API_KEY?.trim()) return process.env.OPENROUTER_API_KEY.trim();
+  const file = process.env.OPENROUTER_KEY_FILE || join(SUPPORT, "openrouter-key");
+  const value = (await readFile(file, "utf8").catch(() => "")).trim();
   if (!value) throw new Error("No OpenRouter key: run `sift voice key -` on the Mac.");
   return value;
 }

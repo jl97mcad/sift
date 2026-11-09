@@ -70,10 +70,11 @@ How to work:
  * One turn. Streams spoken text through onText(delta) and runs tool calls through the handlers.
  * A second round is only for a result that has to be spoken, or a hand-off made in silence.
  */
-export async function respond(config, history, userText, handlers, onText) {
+export async function respond(config, history, userText, handlers, onText, { tools = true } = {}) {
   history.push({ role: "user", content: userText });
   for (let round = 0; round < 3; round += 1) {
-    const { text, calls } = await stream(config, history, onText);
+    const { text, calls } = await stream(config, history, onText, tools);
+    if (!tools) { history.push({ role: "assistant", content: text }); break; } // no tools offered: never run any
     history.push({ role: "assistant", content: text || null, ...(calls.length ? { tool_calls: calls } : {}) });
     if (!calls.length) break;
     for (const call of calls) {
@@ -98,12 +99,12 @@ export async function respond(config, history, userText, handlers, onText) {
   while (history[0] && history[0].role !== "user") history.shift(); // never start mid-exchange
 }
 
-async function stream(config, history, onText) {
+async function stream(config, history, onText, tools = true) {
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: { Authorization: `Bearer ${await key()}`, "Content-Type": "application/json", "X-Title": config.assistant || "Voice assistant" },
     body: JSON.stringify({
-      model: config.frontModel, stream: true, max_tokens: 300, tools: toolsFor(config),
+      model: config.frontModel, stream: true, max_tokens: 300, ...(tools ? { tools: toolsFor(config) } : {}),
       messages: [{ role: "system", content: systemPrompt(config) }, ...history],
     }),
     signal: AbortSignal.timeout(30_000),
@@ -139,7 +140,7 @@ export async function summarise(config, history, job) {
   const at = history.length;
   await respond(config, history,
     `(System note, not ${config.person}: ${job.to} finished "${job.task}". Its reply: ${job.reply.slice(0, 3000) || "(no reply)"}. Tell ${config.person} the result in one or two short spoken sentences, starting with what it was about. If it needs their decision, ask that one question last.)`,
-    {}, (delta) => (spoken += delta));
+    {}, (delta) => (spoken += delta), { tools: false }); // a summary must be spoken, never a tool call
   // Keep what was said, not the note: later turns must never read it as words the person said.
   const note = history.findIndex((message, index) => index >= at && message.role === "user" && String(message.content).startsWith("(System note"));
   if (note >= 0) history.splice(note, 1, { role: "user", content: `(${job.to} finished: ${job.task})` });
