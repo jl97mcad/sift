@@ -5,7 +5,8 @@ struct ChatListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PaneHeader(title: "Sift", subtitle: store.offline ? "Offline · showing saved chats" : "A little space for what needs you") {
+            PaneHeader(title: "Sift", subtitle: store.offline ? "Offline · showing saved chats" : liveStatus) {
+                shortcuts
                 if store.loadingChats {
                     ProgressView().controlSize(.small).frame(width: 32)
                 } else {
@@ -20,7 +21,7 @@ struct ChatListView: View {
                 tab("All chats", all: true)
                 Spacer(minLength: 0)
                 if !store.showAllChats && store.unreadCount > 0 {
-                    Text("\(store.unreadCount)").font(.system(size: 12, weight: .medium)).monospacedDigit()
+                    Text("\(store.unreadCount) unread").font(.system(size: 12, weight: .medium)).monospacedDigit()
                         .foregroundStyle(SiftStyle.green)
                 }
             }
@@ -82,7 +83,6 @@ struct ChatListView: View {
                 store.listSelection = min(store.listSelection, max(0, store.visibleChats.count - 1))
             }
             if let error = store.errorText { ErrorBar(text: error) }
-            footer
         }
         .onDisappear { store.showingShortcuts = false }
     }
@@ -100,16 +100,21 @@ struct ChatListView: View {
         .accessibilityAddTraits(store.showAllChats == all ? .isSelected : [])
     }
 
-    private var footer: some View {
-        HStack(spacing: 14) {
-            Spacer(minLength: 0)
-            Button { store.showingShortcuts.toggle() } label: {
-                Image(systemName: "keyboard").font(.system(size: 14)).frame(width: 28, height: 28)
-            }
-            .buttonStyle(.plain).help("Keyboard shortcuts").accessibilityLabel("Keyboard shortcuts")
+    /// What needs you right now, instead of a slogan.
+    private var liveStatus: String {
+        let needs = store.seats.reduce(0) { $0 + $1.openNeedCount }
+        var parts: [String] = []
+        if needs > 0 { parts.append("\(needs) need\(needs == 1 ? "s" : "") you") }
+        if store.unreadCount > 0 { parts.append("\(store.unreadCount) unread") }
+        return parts.isEmpty ? "Nothing needs you" : parts.joined(separator: " · ")
+    }
+
+    private var shortcuts: some View {
+        IconButton(symbol: "keyboard", help: "Keyboard shortcuts") { store.showingShortcuts.toggle() }
             .popover(isPresented: $store.showingShortcuts) {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("At your fingertips").font(.system(size: 14, weight: .semibold))
+                    ShortcutHint(keys: "⌃⌥ V", label: "talk to Sift (tap, or hold)")
                     ShortcutHint(keys: "⌥ Space", label: "open or collapse Sift")
                     ShortcutHint(keys: "⌘ K", label: "find a chat")
                     ShortcutHint(keys: "⌘ 0", label: "Inbox")
@@ -123,10 +128,6 @@ struct ChatListView: View {
                     .background(SiftStyle.surface)
                     .preferredColorScheme(.dark)
             }
-        }
-        .foregroundStyle(SiftStyle.secondary)
-        .padding(.horizontal, 16).frame(height: 44)
-        .overlay(alignment: .top) { Rectangle().fill(SiftStyle.line).frame(height: 1) }
     }
 }
 
@@ -171,7 +172,7 @@ struct ChatRow: View {
                         .foregroundStyle(SiftStyle.green)
                         .frame(width: 26, height: 36)
                 }
-                .buttonStyle(.plain).help("Mark read").accessibilityLabel("Mark \(chat.displayName) read")
+                .buttonStyle(.plain).help("Unread · click to mark read").accessibilityLabel("Mark \(chat.displayName) read")
                 .padding(.trailing, 4)
             }
         }
