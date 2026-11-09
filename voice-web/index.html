@@ -128,7 +128,7 @@ const empty = $("empty"), button = $("talk"), hint = $("hint"), chip = $("chip")
 const SPEECH = 0.035, BARGE = 0.09, END_SILENCE = 800, MIN_SPEECH = 300, MAX_TURN = 60_000, IDLE_PAUSE = 45_000;
 
 let on = false, phase = "off", stream, mic, analyser, data, recorder, chunks = [], speechStart = 0, lastLoud = 0, listenSince = 0, loopTimer;
-let player, current, queue = [], playing = false, generation = 0, controller;
+let player, current, queue = [], playing = false, generation = 0, controller, later = [];
 
 function set(next, text) {
   phase = next;
@@ -168,6 +168,7 @@ async function playQueue() {
       });
     } catch (error) { console.warn("A clip didn't play", error); }
   }
+  if (mine !== generation) return; // a newer loop owns the flags now
   current = null; playing = false;
   if (on && phase === "speaking") listen();
 }
@@ -204,7 +205,11 @@ function record() {
   recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   recorder.start();
 }
-function listen() { record(); speechStart = 0; listenSince = Date.now(); set("listening"); }
+function listen() {
+  record(); speechStart = 0; listenSince = Date.now(); set("listening");
+  // News that arrived while you were talking plays now.
+  if (later.length) { const news = later; later = []; news.forEach(speak); }
+}
 
 function level() {
   analyser.getFloatTimeDomainData(data);
@@ -280,7 +285,8 @@ events.onmessage = (message) => {
   if (event.type === "job") showJob(event.job);
   if (event.type === "say") {
     add(el("p", "sift", event.text));
-    if (player && (phase === "listening" || phase === "off" || phase === "speaking")) event.audio.forEach(speak);
+    if (phase === "hearing" || phase === "thinking") later.push(...event.audio); // never over your own turn
+    else if (player) event.audio.forEach(speak);
   }
 };
 fetch("/api/config").then((r) => r.json()).then((c) => { $("name").textContent = c.assistant; document.title = c.assistant; c.jobs.forEach(showJob); });

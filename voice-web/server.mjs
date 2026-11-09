@@ -26,7 +26,9 @@ const serial = (fn) => (conversation = conversation.then(fn, fn));
 
 function broadcast(event) {
   const line = `data: ${JSON.stringify(event)}\n\n`;
-  for (const listener of listeners) listener.write(line);
+  for (const listener of listeners) {
+    try { listener.write(line); } catch { listeners.delete(listener); }
+  }
 }
 
 /** Speech for some text, one clip per piece, in order. */
@@ -50,7 +52,7 @@ function delegate(task) {
   jobs.push(job);
   jobs.splice(0, Math.max(0, jobs.length - 20));
   broadcast({ type: "job", job: view(job) });
-  workQueue = workQueue.then(() => run(job));
+  workQueue = workQueue.then(() => run(job)).catch((error) => console.error("job failed", error)); // one bad job never blocks the rest
   return `Started: the ${config.worker.name} session is on it. Its result will be spoken when it's ready.`;
 }
 
@@ -136,7 +138,7 @@ async function turn(request, response) {
           speech = speech.then(async () => { const data = await clip; if (data) emit({ type: "audio", data }); });
         }
       };
-      await respond(config, history, heard, { delegate: ({ task }) => delegate(task ?? heard), job_status: jobStatus }, (delta) => {
+      await respond(config, history, heard, { delegate: ({ task }) => delegate(task?.trim() || heard), job_status: jobStatus }, (delta) => {
         text += delta;
         emit({ type: "text", text });
         const ready = settledLength(text);
