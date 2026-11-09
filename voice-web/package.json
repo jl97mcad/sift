@@ -1,0 +1,7 @@
+{
+  "name": "sift-voice-web",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node server.mjs", "check": "node check.mjs" },
+  "dependencies": { "@getpaseo/client": "0.15.3" }
+}
