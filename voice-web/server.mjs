@@ -7,7 +7,7 @@ import { appendFile, readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { createPaseoApi } from "@getpaseo/client";
 import { createHostClient } from "@getpaseo/client/node";
-import { writeFile, unlink, chmod } from "node:fs/promises";
+import { writeFile, chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isPhantom, pieces, plain, progressLine, settledLength, speakPiece, stepLabel, transcribe } from "./speech.mjs";
@@ -53,11 +53,14 @@ function replyIn(value) {
 }
 
 async function runCommand(worker, prompt) {
-  const file = join(tmpdir(), `voice-task-${Date.now()}.txt`);
-  await writeFile(file, prompt);
-  await chmod(file, 0o644); // the command may run as another user
+  // A fresh unlistable folder: no guessable path to plant a link at, no clash between jobs.
+  const folder = await mkdtemp(join(tmpdir(), "voice-task-"));
+  await chmod(folder, 0o711); // the command may run as another user: it can open the file, not list the folder
+  const file = join(folder, "task.txt");
+  await writeFile(file, prompt, { flag: "wx", mode: 0o644 });
+  const quoted = `'${file.replaceAll("'", "'\\''")}'`;
   try {
-    const stdout = await new Promise((resolve, reject) => execFile("/bin/sh", ["-c", worker.command.replaceAll("{file}", file)],
+    const stdout = await new Promise((resolve, reject) => execFile("/bin/sh", ["-c", worker.command.replaceAll("{file}", quoted)],
       { timeout: (worker.timeoutMinutes ?? 10) * 60_000, maxBuffer: 4 << 20 }, (error, out) => (error ? reject(error) : resolve(out))));
     try {
       return String(replyIn(JSON.parse(stdout)) ?? stdout).trim();
@@ -65,7 +68,7 @@ async function runCommand(worker, prompt) {
       return stdout.trim();
     }
   } finally {
-    await unlink(file).catch(() => {});
+    await rm(folder, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -139,7 +142,7 @@ async function run(job) {
   job.status = "running";
   broadcast({ type: "job", job: view(job) });
   const prompt = `(${config.person}, by voice through their assistant. Do this, then reply in a few short plain sentences; your reply is summarised aloud.)\n\n${job.task}`;
-  if (job.worker.command) {
+  if (job.worker?.command) {
     job.steps = [`Asking ${job.to}`];
     broadcast({ type: "job", job: view(job) });
     try {

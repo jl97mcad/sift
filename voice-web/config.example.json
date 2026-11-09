@@ -31,7 +31,8 @@
       "name": "Taro Twin",
       "url": "relay://<the laptop's pairing address from `paseo daemon pair --json`>",
       "seat": "taro-twin",
-      "use": "Things only the laptop can see; only while it's on"
+      "use": "Things only the laptop can see; only while it's on",
+      "handoff": "I'll ask Taro Twin on your laptop"
     }
   ],
   "needs": {
