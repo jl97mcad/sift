@@ -62,7 +62,8 @@ const view = (job) => ({ id: job.id, task: job.task, to: job.to, status: job.sta
 
 function delegate({ task, to, plan }, heard) {
   const workers = workersOf(config);
-  const worker = workers.find((w) => w.name === to) ?? workers[0];
+  const worker = workers.find((w) => w.name === to) ?? (workers.length === 1 ? workers[0] : null);
+  if (!worker) return `There's no session called "${to}". Choose one of: ${workers.map((w) => w.name).join(", ")}.`; // never the wrong one
   const job = { id: `job-${Date.now()}`, task: task?.trim() || heard, to: worker.lead && plan ? `the ${plan} lead` : worker.name, worker, plan, status: "queued", steps: [], reply: "", started: Date.now() };
   jobs.push(job);
   jobs.splice(0, Math.max(0, jobs.length - 20));

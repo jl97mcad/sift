@@ -86,7 +86,7 @@ export async function respond(config, history, userText, handlers, onText) {
     const names = calls.map((call) => call.function.name);
     if (names.includes("stay_quiet") || names.includes("end_conversation")) break;
     // A silent hand-off speaks its ready-made line now, instead of waiting on another model round.
-    if (!text && names.every((name) => name === "delegate") && handlers.handoffLine) {
+    if (!text && names.length && names.every((name) => name === "delegate") && handlers.handoffLine) {
       const line = handlers.handoffLine(calls.map((call) => { try { return JSON.parse(call.function.arguments || "{}"); } catch { return {}; } }));
       onText(line);
       history.push({ role: "assistant", content: line });
