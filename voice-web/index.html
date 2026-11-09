@@ -74,7 +74,7 @@ async function finish() {
   stream = null;
   const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
   try {
-    const response = await fetch("/api/talk", { method: "POST", headers: { "Content-Type": blob.type }, body: blob });
+    const response = await fetch("/api/talk", { method: "POST", headers: { "Content-Type": blob.type }, body: blob, signal: AbortSignal.timeout(330_000) });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Something went wrong.");
     if (!result.heard) { settle("Tap to talk", "Didn't catch anything; nothing was sent."); return; }
@@ -93,6 +93,7 @@ async function finish() {
 
 button.addEventListener("click", () => {
   if (state === "idle") {
+    state = "starting"; // a second tap while the microphone opens does nothing
     // Made inside the tap so iPhone lets the level meter run.
     const context = new AudioContext();
     context.resume();
