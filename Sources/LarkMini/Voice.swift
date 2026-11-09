@@ -271,6 +271,7 @@ final class VoiceMode: ObservableObject {
 
     func start(_ seat: SeatSession) {
         guard phase != .transcribing, phase != .listening else { return }
+        seatId = seat.id // so a note about the key or microphone shows on this seat
         guard SpeechAPI.storedKey() != nil else {
             note("Voice needs an OpenRouter key: sift voice key - (key on stdin).")
             return
