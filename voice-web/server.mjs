@@ -4,7 +4,7 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { createPaseoClient } from "@getpaseo/client";
-import { acknowledgement, pieces, plain, settledLength, speakPiece, stepLabel, transcribe } from "./speech.mjs";
+import { acknowledgement, pieces, plain, progressLine, settledLength, speakPiece, stepLabel, transcribe } from "./speech.mjs";
 
 const PORT = Number(process.env.PORT ?? 8771);
 const MAX_AUDIO = 20 * 1024 * 1024;
@@ -56,9 +56,13 @@ async function talk(request, response) {
 
     let speech = Promise.resolve();
     let budget = 2000; // ponytail: characters spoken per turn; the rest stays on screen
+    let lastSpoke = Date.now();
+    let updates = 0;
     const say = (text) => {
       for (const piece of pieces(plain(text))) {
         if ((budget -= piece.length) < 0) return;
+        lastSpoke = Date.now();
+        updates = 0; // real speech resets the progress spacing
         const clip = speakPiece(piece).catch((error) => (console.error(error), null));
         speech = speech.then(async () => {
           const data = await clip;
@@ -67,6 +71,8 @@ async function talk(request, response) {
       }
     };
     let steps = [];
+    let stepSince = Date.now();
+    let toolCalls = 0;
     let text = "";
     let spoken = 0;
     // ponytail: polls the local daemon every 0.6 s during a turn; a timeline subscription would
@@ -83,6 +89,9 @@ async function talk(request, response) {
         const after = page.entries.slice(start).map((entry) => entry.item);
         const labels = after.map(stepLabel).filter(Boolean).filter((label, i, all) => label !== all[i - 1]);
         for (const label of labels.slice(steps.length)) emit({ type: "step", label });
+        const raw = after.filter((item) => item.type === "tool_call").length;
+        if (raw !== toolCalls) stepSince = Date.now(); // any new tool call, even one with the same label
+        toolCalls = raw;
         steps = labels;
         const reply = after.filter((item) => item.type === "assistant_message" && item.text).map((item) => item.text).join("\n\n");
         if (reply !== text) emit({ type: "text", text: (text = reply) });
@@ -93,6 +102,19 @@ async function talk(request, response) {
         }
       }
       if (done) break;
+      // Never quiet for long: after 15 s with nothing said, say what it's doing now.
+      // The gap grows (15, 30, 45, then every 60 s) so a long stall doesn't talk non-stop.
+      if (start >= 0 && Date.now() - lastSpoke > Math.min(15_000 * (updates + 1), 60_000)) {
+        updates += 1;
+        const line = progressLine(steps.at(-1), (Date.now() - stepSince) / 1000);
+        lastSpoke = Date.now();
+        const clip = speakPiece(line).catch(() => null);
+        speech = speech.then(async () => {
+          const data = await clip;
+          if (data) emit({ type: "audio", data });
+        });
+        emit({ type: "update", text: line });
+      }
     }
     if (open) await speech; // a phone that hung up doesn't hold the next turn
     if (failure) emit({ type: "error", message: failure.message ?? String(failure) });

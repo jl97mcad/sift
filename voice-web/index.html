@@ -59,6 +59,7 @@
     content: "✓"; animation: none; border: 0; color: var(--mint); font-size: 12px; font-weight: 700;
     display: grid; place-items: center;
   }
+  .more { color: var(--muted); font-size: 12px; opacity: .7; padding-left: 24px; }
   .reply { margin: 0; white-space: pre-wrap; font-size: 17px; line-height: 1.55; letter-spacing: -.005em; }
   .reply:empty { display: none; }
   .note { color: var(--muted); font-size: 14px; margin: 0; }
@@ -229,6 +230,17 @@ async function finish() {
         } else if (event.type === "step") {
           view.steps.querySelectorAll(".step:not(.done)").forEach((s) => s.classList.add("done"));
           view.steps.append(el("li", "step", event.label));
+          // Only the latest few steps; the count says how many came before.
+          const all = view.steps.querySelectorAll(".step");
+          all.forEach((s, i) => s.hidden = i < all.length - 4);
+          const earlier = all.length - 4;
+          let more = view.steps.querySelector(".more");
+          if (earlier > 0) {
+            if (!more) { more = el("li", "more"); view.steps.prepend(more); }
+            more.textContent = `${earlier} earlier step${earlier === 1 ? "" : "s"}`;
+          }
+        } else if (event.type === "update") {
+          hint.textContent = event.text;
         } else if (event.type === "text") {
           view.steps.querySelectorAll(".step").forEach((s) => s.classList.add("done"));
           view.reply.textContent = event.text.replace(/\*\*|__|`/g, "");

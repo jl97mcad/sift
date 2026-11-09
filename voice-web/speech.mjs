@@ -88,17 +88,21 @@ export function settledLength(text) {
   return end;
 }
 
-/** A plain label for what the agent is doing, from one timeline item. */
+/** A plain label for what the agent is doing, from one timeline item; null for noise. */
 export function stepLabel(item) {
   if (item.type === "reasoning") return "Thinking";
   if (item.type !== "tool_call") return null;
+  // Background-task notices, messages from other agents and empty tool records say nothing useful.
   const command = item.detail?.command ?? "";
+  if (["task_notification", "agent_message"].includes(item.name) || (item.name === "tool" && !command)) return null;
   const rules = [
     [/STATE\.md/, "Reading the god session's notes"],
     [/scratchpad/, "Reading Control's scratchpad"],
     [/overnight-|day log/, "Reading Control's day log"],
     [/asks\.json/, "Checking what needs you"],
-    [/\bboard\b/, "Reading the board"],
+    [/[Pp]ocket/, "Looking in Pocket"],
+    [/vault/, "Reading your vault"],
+    [/linear|\bboard\b/i, "Reading the board"],
     [/paseo (agent )?(ls|list)/, "Checking sessions"],
     [/paseo (agent )?logs/, "Reading a session"],
     [/paseo (agent )?send/, "Messaging a session"],
@@ -110,7 +114,17 @@ export function stepLabel(item) {
   for (const [pattern, label] of rules) if (pattern.test(command)) return label;
   if (item.name === "Read") return "Reading a file";
   if (item.name === "WebSearch" || item.name === "WebFetch") return "Searching the web";
-  return command ? "Running a command" : `Using ${item.name ?? "a tool"}`;
+  if (item.name === "Edit" || item.name === "Write") return "Editing a file";
+  if (item.name === "Grep" || item.name === "Glob") return "Searching files";
+  if (item.name === "TodoWrite") return "Planning the steps";
+  return item.name === "Bash" ? "Running a command" : "Working";
+}
+
+/** What Sift says when the agent has been quiet a while, so a voice-only user knows it's working. */
+export function progressLine(label, secondsOnStep) {
+  const doing = (label ?? "Working").replace(/^\w/, (c) => c.toLowerCase());
+  if (secondsOnStep > 60) return `Still ${doing}. It's taking a while, but it's still going.`;
+  return `Still working. ${label ?? "Thinking"}.`;
 }
 
 /** One piece of text as speech. */
