@@ -103,33 +103,46 @@
   @media (prefers-reduced-motion: reduce) {
     *, *::before { animation: none !important; transition: none !important; }
   }
-  .job { border: 1px solid var(--line); background: var(--panel); border-radius: 14px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; animation: rise .3s ease-out both; }
-  .job .title { font-size: 14px; color: var(--text); }
-  .job .meta { font-size: 12px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
-  .job .meta::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--mint); animation: breathe 1.2s ease-in-out infinite; }
-  .job.done .meta::before { background: var(--green); animation: none; }
-  .job.failed .meta::before { background: #ff8a7a; animation: none; }
+  /* Work card, after ReUI's ai-chat-8: who was asked, then each check with a tick. */
+  .job { border: 1px solid var(--line); background: var(--panel); border-radius: 16px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; animation: rise .3s ease-out both; }
+  .job .head { font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .job .head::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--mint); animation: breathe 1.2s ease-in-out infinite; }
+  .job.done .head::before { background: var(--green); animation: none; }
+  .job.failed .head::before { background: #ff8a7a; animation: none; }
+  .job .title { font-size: 15px; color: var(--text); }
+  .job ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+  .job li { font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .job li::before { content: "✓"; color: var(--mint); font-weight: 700; width: 12px; }
+  .job.running li:last-child::before { content: ""; width: 9px; height: 9px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--mint) 35%, transparent); border-top-color: var(--mint); animation: spin .8s linear infinite; }
+  .you .label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 2px; letter-spacing: .02em; }
+  form#ask { width: min(100%, 560px); display: flex; gap: 8px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 6px 6px 6px 16px; }
+  form#ask input { flex: 1; min-width: 0; background: transparent; border: 0; color: var(--text); font: inherit; font-size: 16px; outline: none; }
+  form#ask input::placeholder { color: var(--muted); }
+  form#ask button { width: 34px; height: 34px; border-radius: 50%; border: 0; background: var(--text); color: var(--bg); font-size: 16px; cursor: pointer; }
+  form#ask button:disabled { opacity: .3; }
   .sift { margin: 0; font-size: 17px; line-height: 1.5; }
 </style>
 </head>
 <body>
 <header><h1 id="name">Sift</h1><span id="chip">Ready</span></header>
 <main id="thread" aria-live="polite">
-  <div id="empty"><strong>Just talk</strong>Tap the orb once. I'll listen, answer, and listen again.<br>Talk over me to interrupt. Tap again to stop.</div>
+  <div id="empty"><strong>Just talk</strong>Tap the orb once. I'll listen, answer, and listen again.<br>Talk over me to interrupt. Say bye or tap again to stop.</div>
 </main>
 <footer>
   <button id="talk" aria-label="Start talking"><span class="halo"></span><span class="orb"></span></button>
   <div id="hint" role="status">Tap to start</div>
+  <form id="ask" autocomplete="off"><input id="typed" placeholder="Or type to ask anything" aria-label="Type a question"><button aria-label="Send" disabled>↑</button></form>
 </footer>
 <script>
 const $ = (id) => document.getElementById(id);
 const empty = $("empty"), button = $("talk"), hint = $("hint"), chip = $("chip"), thread = $("thread");
 // ponytail: fixed loudness thresholds (0..1 RMS); tune here if a room cuts turns short or hears echoes.
-const SPEECH = 0.045, BARGE = 0.12, END_SILENCE = 800, MIN_SPEECH = 450, MAX_TURN = 60_000, IDLE_PAUSE = 45_000, AFTER_SPEAKING = 700;
+const SPEECH = 0.045, BARGE = 0.12, END_SILENCE = 700, MIN_SPEECH = 450, MAX_TURN = 60_000, IDLE_PAUSE = 45_000, AFTER_SPEAKING = 700;
 let floor = 0.01, deaf = 0; // the room's quiet level, and a moment after it speaks when it doesn't listen
 
 let endAfterSpeech = false, on = false, phase = "off", stream, mic, analyser, data, recorder, chunks = [], speechStart = 0, lastLoud = 0, listenSince = 0, loopTimer;
-let player, current, queue = [], playing = false, generation = 0, controller, later = [];
+let player, current, currentBytes, queue = [], playing = false, generation = 0, controller, later = [];
+let resumable = null, turnEndedAt = 0; // what an interruption cut off, and when the last turn ended
 
 function set(next, text) {
   phase = next;
@@ -158,7 +171,9 @@ async function playQueue() {
   const mine = generation;
   while (queue.length && mine === generation) {
     try {
-      const buffer = await player.decodeAudioData(queue.shift());
+      const bytes = queue.shift();
+      currentBytes = bytes.slice(0); // decoding detaches the bytes; keep a copy to resume after a false interruption
+      const buffer = await player.decodeAudioData(bytes);
       if (mine !== generation) break;
       if (player.state !== "running") await player.resume();
       if (on && phase !== "hearing") set("speaking");
@@ -166,6 +181,10 @@ async function playQueue() {
         const source = player.createBufferSource();
         source.buffer = buffer; source.connect(player.destination); source.onended = done;
         current = source; source.start();
+        if (turnEndedAt) { // time to first audio, measured here on the phone
+          const ms = Date.now() - turnEndedAt; turnEndedAt = 0;
+          fetch("/api/metric", { method: "POST", body: JSON.stringify({ ms }) }).catch(() => {});
+        }
       });
     } catch (error) { console.warn("A clip didn't play", error); }
   }
@@ -223,9 +242,16 @@ function tick() {
   if (!on || !analyser) return;
   const rms = level(), now = Date.now();
   document.documentElement.style.setProperty("--level", Math.min(1, rms * 9).toFixed(2));
-  if (phase === "speaking" || phase === "thinking") {
+  if (phase === "thinking") return; // while it works out a reply, only a tap interrupts: a cough must not lose it
+  if (phase === "speaking") {
     // Barge-in: you talking over it stops it and starts your turn. Louder bar so it doesn't hear itself.
-    if (rms > BARGE) { speechStart ||= now; if (now - speechStart > 220) { hush(); controller?.abort(); listen(); speechStart = now; set("hearing"); } }
+    if (rms > BARGE) {
+      speechStart ||= now;
+      if (now - speechStart > 220) {
+        resumable = [currentBytes, ...queue].filter(Boolean); // in case it was only a cough (replays this sentence)
+        hush(); controller?.abort(); listen(); speechStart = now; set("hearing");
+      }
+    }
     else speechStart = 0;
     return;
   }
@@ -242,16 +268,25 @@ function tick() {
 
 async function send() {
   set("thinking");
+  turnEndedAt = Date.now();
   const done = new Promise((resolve) => (recorder.onstop = resolve));
   recorder.stop();
   await done;
-  const mine = generation;
   const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
-  const you = el("p", "you", "…"), reply = el("p", "sift");
+  await converse("You said", (signal) => fetch("/api/turn", { method: "POST", headers: { "Content-Type": blob.type }, body: blob, signal }));
+}
+
+/** One exchange, voice or typed: shows what was heard, streams the reply text and plays its speech. */
+async function converse(label, request) {
+  const mine = generation;
+  const you = el("p", "you"), said = el("span", "words", "…");
+  you.append(el("span", "label", label), said);
+  const reply = el("p", "sift");
   add(you);
   controller = new AbortController();
   try {
-    const response = await fetch("/api/turn", { method: "POST", headers: { "Content-Type": blob.type }, body: blob, signal: controller.signal });
+    const response = await request(controller.signal);
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Something went wrong.");
     const reader = response.body.getReader(), decoder = new TextDecoder();
     let buffer = "", spoke = false;
     for (;;) {
@@ -262,7 +297,14 @@ async function send() {
       while ((line = buffer.indexOf("\n")) >= 0) {
         const event = JSON.parse(buffer.slice(0, line)); buffer = buffer.slice(line + 1);
         if (mine !== generation) continue;
-        if (event.type === "heard") { if (!event.text) { you.remove(); } else you.textContent = event.text; }
+        if (event.type === "heard") {
+          if (event.text) { said.textContent = event.text; resumable = null; }
+          else {
+            you.remove();
+            // Nothing real was said: if that cut it off, carry on where it stopped.
+            if (resumable?.length) { const rest = resumable; resumable = null; rest.forEach((b) => queue.push(b)); playQueue(); spoke = true; }
+          }
+        }
         else if (event.type === "text") { if (!reply.isConnected) add(reply); reply.textContent = event.text; }
         else if (event.type === "audio") { spoke = true; speak(event.data); }
         else if (event.type === "error") add(el("p", "note", event.message));
@@ -281,10 +323,12 @@ async function send() {
 const cards = new Map();
 function showJob(job) {
   let card = cards.get(job.id);
-  if (!card) { card = add(el("div", "job")); card.append(el("div", "title", job.task), el("div", "meta")); cards.set(job.id, card); }
+  if (!card) { card = add(el("div", "job")); card.append(el("div", "head"), el("div", "title", job.task), el("ul", "")); cards.set(job.id, card); }
   card.className = `job ${job.status}`;
-  const step = job.steps.at(-1);
-  card.querySelector(".meta").textContent = { queued: "Waiting its turn", running: step ?? "Starting", done: "Done", failed: "Didn't finish" }[job.status] ?? job.status;
+  const who = job.to ?? "the worker";
+  card.querySelector(".head").textContent = { queued: `Waiting for ${who}`, running: `Asked ${who}`, done: `${who[0].toUpperCase()}${who.slice(1)} answered`, failed: `${who[0].toUpperCase()}${who.slice(1)} didn't finish` }[job.status] ?? job.status;
+  const list = card.querySelector("ul");
+  list.replaceChildren(...job.steps.filter((s) => s !== "Thinking").map((s) => el("li", "", s)));
 }
 const events = new EventSource("/api/events");
 events.onmessage = (message) => {
@@ -296,7 +340,23 @@ events.onmessage = (message) => {
     else if (player) { if (!on) hint.textContent = "News from your worker"; event.audio.forEach(speak); }
   }
 };
-fetch("/api/config").then((r) => r.json()).then((c) => { $("name").textContent = c.assistant; document.title = c.assistant; c.jobs.forEach(showJob); });
+fetch("/api/config").then((r) => r.json()).then((c) => {
+  $("name").textContent = c.assistant; document.title = c.assistant || "Voice"; c.jobs.forEach(showJob);
+});
+
+const form = $("ask"), typed = $("typed"), sendButton = form.querySelector("button");
+typed.addEventListener("input", () => (sendButton.disabled = !typed.value.trim()));
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const text = typed.value.trim();
+  if (!text) return;
+  typed.value = ""; sendButton.disabled = true;
+  unlockPlayer(); // the send tap lets the reply play
+  hush(); controller?.abort();
+  if (on) set("thinking");
+  turnEndedAt = Date.now();
+  converse("You typed", (signal) => fetch("/api/text", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }), signal }));
+});
 
 button.addEventListener("click", () => {
   if (!on) begin().catch((e) => end("Microphone unavailable: " + e.message));

@@ -1,54 +1,74 @@
-// The front door: a fast model that holds the spoken conversation and hands real work to a
-// worker Paseo session in the background. Everything person-specific comes from config.json.
+// The front door: a fast model that holds the spoken conversation and hands real work to the
+// person's worker sessions in the background. Everything person-specific comes from config.json.
 import { key } from "./speech.mjs";
 
 const HISTORY = 30; // ponytail: messages kept in memory; one conversation per server, lost on restart
+// Tools whose result must be spoken in a second round; the others are fire-and-forget.
+const SPEAK_RESULT = new Set(["job_status", "needs_queue"]);
 
-const tools = [
-  {
-    type: "function",
-    function: {
-      name: "delegate",
-      description: "Hand a task to the worker agent, which can read the person's work (sessions, plans, notes, PRs, meetings, messages) and act through their agents. Use it for anything about their work you can't answer from this conversation.",
-      parameters: { type: "object", properties: { task: { type: "string", description: "The task in the person's own words, with any detail from the conversation." } }, required: ["task"] },
+/** The people's workers, from config: `workers`, or the older single `worker`. */
+export function workersOf(config) {
+  return config.workers ?? [{ ...config.worker, use: "Anything about their work" }];
+}
+
+function toolsFor(config) {
+  const workers = workersOf(config);
+  return [
+    {
+      type: "function",
+      function: {
+        name: "delegate",
+        description: "Hand a task to one of the person's worker sessions, in the background. They can read the person's work and act through their agents.",
+        parameters: {
+          type: "object",
+          properties: {
+            task: { type: "string", description: "The task in the person's own words, with any detail from the conversation." },
+            to: { type: "string", enum: workers.map((w) => w.name), description: workers.map((w) => `${w.name}: ${w.use}`).join(". ") },
+            plan: { type: "string", description: "Only for a plan lead: the plan's number, e.g. JON-123." },
+          },
+          required: ["task", "to"],
+        },
+      },
     },
-  },
-  {
-    type: "function",
-    function: {
-      name: "end_conversation",
-      description: "Stop listening. Call it when the person says goodbye, good night, that's all, or otherwise ends the chat, after a few words of goodbye.",
-      parameters: { type: "object", properties: {} },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "job_status",
-      description: "What the worker is doing now and what it has finished, with its replies.",
-      parameters: { type: "object", properties: {} },
-    },
-  },
-];
+    { type: "function", function: { name: "job_status", description: "What the workers are doing now and what they've finished, with their replies.", parameters: { type: "object", properties: {} } } },
+    { type: "function", function: { name: "needs_queue", description: "The open questions waiting for the person's answer, newest first.", parameters: { type: "object", properties: {} } } },
+    { type: "function", function: { name: "stay_quiet", description: "Say nothing this turn: the words weren't meant for you (background talk, a cough, thinking aloud, a fragment).", parameters: { type: "object", properties: {} } } },
+    { type: "function", function: { name: "end_conversation", description: "Stop listening, after a few words of goodbye, when the person says goodbye, good night or that's all.", parameters: { type: "object", properties: {} } } },
+  ];
+}
 
 export function systemPrompt(config) {
   const now = new Date().toLocaleString("en-GB", { timeZone: config.timezone, dateStyle: "full", timeStyle: "short" });
-  return `You are ${config.assistant}, ${config.person}'s spoken assistant: the front door for everything he asks by voice. It is ${now} where he is.
+  const me = config.assistant ? `You are ${config.assistant}, ${config.person}'s` : `You are ${config.person}'s`;
+  const workers = workersOf(config).map((w) => `- ${w.name}: ${w.use}${w.handoff ? ` (say something like "${w.handoff}")` : ""}`).join("\n");
+  return `${me} voice assistant: the front door for everything they ask by voice. It is ${now} where they are.
 ${config.about}
 
-You talk; the worker (${config.worker.name}) does the work. Rules:
-- Speak like a quick, warm colleague. One or two short sentences per turn. No lists, markdown, ids or links.
-- Anything about his work (plans, agents, meetings, people, PRs, messages, what needs him), or any action: call delegate at once with the task in his words, and in the same turn say briefly what you've asked for. Never make up facts about his work.
-- When he asks how something is going, call job_status and tell him in a sentence, including what step it's on.
-- General questions and quick follow-ups about what was said: answer yourself.
-- If he says "yep", "ok" or "thanks", reply in a few words or just acknowledge.
-- When he says goodbye or that's all, say a short goodbye and call end_conversation.
-- Never send anything outside the company yourself; the worker only proposes such sends, and he approves them.`;
+You talk; these sessions do the work:
+${workers}
+
+How to talk:
+- Like a quick, warm colleague on the phone. One or two short sentences, at most about 40 words. Contractions. No lists, markdown, ids or links. Short answer first; detail only if asked.
+- Ask at most one question, and put it last.
+- Vary your wording; never repeat the same opener twice in a row.
+- Don't end with offers like "anything else?" or "want me to check?" unless a decision is genuinely theirs to make.
+
+How to work:
+- Anything about their work, or any action: call delegate at once with the task in their words, choosing the session that fits. In the same turn, say naturally who you've asked and that you'll come back to them, for example "Let me look deeper into that" or "I'll ask Control". If it may take a while, say roughly how long.
+- Never say something is done, or state facts about their work, until a session's result is in. You may say what hasn't happened yet.
+- "How's that going?": call job_status and say where it's up to in a sentence.
+- "What needs me?" or a catch-up: call needs_queue and give the most important one or two, then offer the rest.
+- Only bring up what they asked about, results of work they asked for, and the needs queue. Don't volunteer other news.
+- General questions and follow-ups about what was said: answer yourself.
+- If the words weren't meant for you (background talk, a cough, a fragment, thinking aloud), call stay_quiet.
+- "Yep", "ok", "thanks": a few words at most, or stay_quiet.
+- Goodbye, good night or that's all: a short goodbye, then end_conversation.
+- Never send anything outside the company yourself; sessions only propose such sends, and the person approves them.`;
 }
 
 /**
- * One turn. Streams spoken text through onText(delta) and runs tool calls through the given
- * handlers, then lets the model finish its reply.
+ * One turn. Streams spoken text through onText(delta) and runs tool calls through the handlers.
+ * A second round is only for a result that has to be spoken, or a hand-off made in silence.
  */
 export async function respond(config, history, userText, handlers, onText) {
   history.push({ role: "user", content: userText });
@@ -63,8 +83,16 @@ export async function respond(config, history, userText, handlers, onText) {
       const result = handler ? await handler(args) : "Unknown tool.";
       history.push({ role: "tool", tool_call_id: call.id, content: String(result) });
     }
-    // It already spoke alongside a hand-off, so don't make it talk twice; a status check must be spoken.
-    if (text && calls.every((call) => call.function.name !== "job_status")) break;
+    const names = calls.map((call) => call.function.name);
+    if (names.includes("stay_quiet") || names.includes("end_conversation")) break;
+    // A silent hand-off speaks its ready-made line now, instead of waiting on another model round.
+    if (!text && names.length && names.every((name) => name === "delegate") && handlers.handoffLine) {
+      const line = handlers.handoffLine(calls.map((call) => { try { return JSON.parse(call.function.arguments || "{}"); } catch { return {}; } }));
+      onText(line);
+      history.push({ role: "assistant", content: line });
+      break;
+    }
+    if (!names.some((name) => SPEAK_RESULT.has(name)) && text) break;
   }
   history.splice(0, Math.max(0, history.length - HISTORY));
   while (history[0] && history[0].role !== "user") history.shift(); // never start mid-exchange
@@ -73,9 +101,9 @@ export async function respond(config, history, userText, handlers, onText) {
 async function stream(config, history, onText) {
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
-    headers: { Authorization: `Bearer ${await key()}`, "Content-Type": "application/json", "X-Title": config.assistant },
+    headers: { Authorization: `Bearer ${await key()}`, "Content-Type": "application/json", "X-Title": config.assistant || "Voice assistant" },
     body: JSON.stringify({
-      model: config.frontModel, stream: true, max_tokens: 300, tools,
+      model: config.frontModel, stream: true, max_tokens: 300, tools: toolsFor(config),
       messages: [{ role: "system", content: systemPrompt(config) }, ...history],
     }),
     signal: AbortSignal.timeout(30_000),
@@ -110,10 +138,10 @@ export async function summarise(config, history, job) {
   let spoken = "";
   const at = history.length;
   await respond(config, history,
-    `(System note, not ${config.person}: ${config.worker.name} finished "${job.task}". Its reply: ${job.reply.slice(0, 3000) || "(no reply)"}. Tell ${config.person} the result in one or two short spoken sentences, starting with what it was about.)`,
+    `(System note, not ${config.person}: ${job.to} finished "${job.task}". Its reply: ${job.reply.slice(0, 3000) || "(no reply)"}. Tell ${config.person} the result in one or two short spoken sentences, starting with what it was about. If it needs their decision, ask that one question last.)`,
     {}, (delta) => (spoken += delta));
   // Keep what was said, not the note: later turns must never read it as words the person said.
-  const note = history.findIndex((message, index) => index >= at - 1 && message.role === "user" && String(message.content).startsWith("(System note"));
-  if (note >= 0) history.splice(note, 1, { role: "user", content: `(${config.worker.name} finished: ${job.task})` });
+  const note = history.findIndex((message, index) => index >= at && message.role === "user" && String(message.content).startsWith("(System note"));
+  if (note >= 0) history.splice(note, 1, { role: "user", content: `(${job.to} finished: ${job.task})` });
   return spoken;
 }
