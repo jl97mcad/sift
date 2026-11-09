@@ -508,6 +508,7 @@ final class VoiceMode: ObservableObject {
         while let ack = ackPlayer, ack.isPlaying, !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
+        guard !Task.isCancelled else { return } // stopped during the acknowledgement
         guard let player = try? AVAudioPlayer(data: audio) else { return }
         let delegate = PlayerDelegate()
         player.delegate = delegate
@@ -590,13 +591,16 @@ final class Acknowledgements {
     ]
     private var clips: [Data] = []
     private var preparing = false
+    /// Made at most once per launch, so a failing key or provider can't cost a request per turn.
+    private var tried = false
     private var last = -1
 
     private var folder: URL { AppPaths.supportDirectory.appendingPathComponent("acknowledgements", isDirectory: true) }
 
     func prepare() async {
-        guard clips.isEmpty, !preparing, let key = SpeechAPI.storedKey() else { return }
+        guard clips.isEmpty, !preparing, !tried, let key = SpeechAPI.storedKey() else { return }
         preparing = true
+        tried = true
         defer { preparing = false }
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let api = SpeechAPI(key: key)
