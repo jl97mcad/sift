@@ -359,10 +359,18 @@ final class SeatSession: ObservableObject, Identifiable {
     func send() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !sending else { return }
+        draft = ""
+        // Put it back without losing anything typed meanwhile.
+        if await !send(text: text) { draft = draft.isEmpty ? text : text + "\n" + draft }
+    }
+
+    /// Sends a prompt as the person; false if it did not go.
+    @discardableResult
+    func send(text: String) async -> Bool {
+        guard !sending else { return false }
         let seat = config
         sending = true
         activity = "Sending"
-        draft = ""
         // Remember the prompt so the timeline can attribute it to you, not to automation.
         let sent = UserDefaults.standard.stringArray(forKey: "controlSent") ?? []
         UserDefaults.standard.set(Array((sent + [Store.sentKey(text)]).suffix(50)), forKey: "controlSent")
@@ -370,12 +378,14 @@ final class SeatSession: ObservableObject, Identifiable {
             try await AgentProviders.resolve(seat.provider)
                 .send(id: seat.agentId, host: seat.host, text: text)
             try? await Task.sleep(nanoseconds: 800_000_000)
+            sending = false
             await refresh()
+            return true
         } catch {
             store?.errorText = error.localizedDescription
-            draft = text
+            sending = false
+            return false
         }
-        sending = false
     }
 
     /// Before seats, seen needs were one list for the one Control. They move to that seat once

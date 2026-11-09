@@ -120,6 +120,19 @@ Open asks come from each seat's daemon, through `control-plugins`' read-only
 `asks.open` call. Without that suite, asks are off for that seat; if the read
 fails, Sift says the state is unknown rather than showing none.
 
+### Voice (optional)
+
+```bash
+printf '%s' "$OPENROUTER_KEY" | sift voice key -
+sift voice test
+```
+
+Hold Option-Shift-Space to talk to the open seat and let go to send (or tap
+it, talk, and tap again; the mic button in a seat's composer does the same).
+Sift transcribes with Whisper turbo and reads the reply aloud with Fish Audio
+Drama 3, both through OpenRouter, sentence by sentence while the agent is
+still writing. Talking again stops the voice. See ADR 0012.
+
 ## CLI
 
 Every command prints one JSON object and exits non-zero on failure.
@@ -135,16 +148,20 @@ Every command prints one JSON object and exits non-zero on failure.
 | `sift pins list \| add <chat_id> \| add --name "Room" \| remove <chat_id> \| clear` | pinned chats |
 | `sift agents list \| add --agent-id ID [--host H] [--name N] [--color C] \| set <id\|name> \| remove <id\|name>` | agent seats |
 | `sift control set \| status \| send "text" \| logs [--tail N] \| digest \| asks \| off` | the Control seat |
+| `sift voice key - \| status \| test ["line"]` | OpenRouter key for voice; speak a line and hear it back |
 | `sift selftest` / `sift open` / `sift logout` | geometry self-test; open the app; forget the session |
 
 ## Privacy and data
 
 - Everything stays on your Mac, in `~/Library/Application Support/Sift/`:
   `credentials.json` (app secret and tokens), `state.json` (pins, settings,
-  agent seats) and `cache.json` (chat list and previews), each mode 0600.
+  agent seats), `cache.json` (chat list and previews) and, if you use voice,
+  `openrouter-key`, each mode 0600. A voice recording is deleted as soon as
+  it is sent for transcription.
   Device-only preferences use macOS user defaults.
 - Sift talks only to Lark's Open API and, for each agent seat, to that
-  Paseo daemon. There is no telemetry and no third-party service.
+  Paseo daemon. Voice, when you use it, sends your recording and the reply
+  text to OpenRouter. There is no telemetry.
 - Notifications are off until you enable them.
 
 ## How it works
