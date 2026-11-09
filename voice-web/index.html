@@ -153,8 +153,9 @@ function unlockPlayer() {
   silence.start(0);
 }
 
-async function playClip(bytes) {
+async function playClip(bytes, mine) {
   const buffer = await player.decodeAudioData(bytes);
+  if (stopped || turn !== mine) return; // stopped while it decoded
   if (player.state !== "running") await player.resume();
   await new Promise((done) => {
     const source = player.createBufferSource();
@@ -162,6 +163,7 @@ async function playClip(bytes) {
     source.connect(player.destination);
     source.onended = done;
     current = source;
+    if (state === "waiting") set("speaking"); // only once audio really starts
     source.start();
   });
   current = null;
@@ -175,10 +177,7 @@ async function playQueue(mine) {
     try {
       const bytes = typeof next === "string" ? await (await fetch(next)).arrayBuffer() : next;
       if (stopped || turn !== mine) break;
-      if (bytes.byteLength) {
-        if (state === "waiting") set("speaking");
-        await playClip(bytes);
-      }
+      if (bytes.byteLength) await playClip(bytes, mine);
     } catch (error) {
       console.warn("Sift voice: a clip didn't play", error);
     }
