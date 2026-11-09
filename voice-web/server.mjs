@@ -62,11 +62,13 @@ async function runCommand(worker, prompt) {
   try {
     const stdout = await new Promise((resolve, reject) => execFile("/bin/sh", ["-c", worker.command.replaceAll("{file}", quoted)],
       { timeout: (worker.timeoutMinutes ?? 10) * 60_000, maxBuffer: 4 << 20 }, (error, out) => (error ? reject(error) : resolve(out))));
+    // The JSON may follow log lines; take it from the first "{" to the last "}".
+    const json = stdout.slice(stdout.indexOf("{"), stdout.lastIndexOf("}") + 1);
     try {
-      return String(replyIn(JSON.parse(stdout)) ?? stdout).trim();
-    } catch {
-      return stdout.trim();
-    }
+      const reply = replyIn(JSON.parse(json));
+      if (reply) return reply.trim();
+    } catch {}
+    return stdout.trim().split("\n").slice(-20).join("\n"); // never read out a whole log
   } finally {
     await rm(folder, { recursive: true, force: true }).catch(() => {});
   }
