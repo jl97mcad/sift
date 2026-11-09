@@ -1,24 +1,15 @@
 // OpenRouter speech, the same models and files as the Sift app (ADR 0012).
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 const SUPPORT = join(homedir(), "Library", "Application Support", "Sift");
 const API = "https://openrouter.ai/api/v1";
-// ponytail: long replies are cut here; raise it if Jon wants long answers read in full.
-const MAX_SPOKEN = 2000;
 
 export async function key() {
   const value = (await readFile(join(SUPPORT, "openrouter-key"), "utf8").catch(() => "")).trim();
   if (!value) throw new Error("No OpenRouter key: run `sift voice key -` on the Mac.");
   return value;
-}
-
-export async function acknowledgement() {
-  const folder = join(SUPPORT, "acknowledgements");
-  const files = (await readdir(folder).catch(() => [])).filter((name) => name.endsWith(".mp3"));
-  if (!files.length) return null;
-  return readFile(join(folder, files[Math.floor(Math.random() * files.length)]));
 }
 
 export async function transcribe(audio, type) {
@@ -67,16 +58,6 @@ export function pieces(text, limit = 280) {
   }
   if (current) out.push(current);
   return out;
-}
-
-/** The assistant's words since this prompt; empty if the prompt is not in the page. */
-export function latestReply(entries, prompt) {
-  let start = -1;
-  entries.forEach((entry, index) => {
-    if (entry.item.type === "user_message" && (entry.item.text ?? "").includes(prompt)) start = index + 1;
-  });
-  if (start < 0) return ""; // the prompt fell out of the page: never read an older reply
-  return entries.slice(start).filter((e) => e.item.type === "assistant_message" && e.item.text).map((e) => e.item.text).join("\n\n");
 }
 
 /** End of the last complete sentence: what can be spoken while the agent is still writing. */
@@ -132,9 +113,3 @@ export async function speakPiece(text) {
   return speak(text, await key());
 }
 
-export async function speakText(text) {
-  let spoken = plain(text);
-  if (spoken.length > MAX_SPOKEN) spoken = spoken.slice(0, MAX_SPOKEN).replace(/\s+\S*$/, "") + ". That's the start; the rest is in Paseo.";
-  const apiKey = await key();
-  return Promise.all(pieces(spoken).map((part) => speak(part, apiKey)));
-}
