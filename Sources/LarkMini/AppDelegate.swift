@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var outsideMonitor: Any?
     private var hotKey: GlobalHotKey?
     private var voiceKey: GlobalHotKey?
+    private var voiceF5: GlobalHotKey?
     private var editMonitor: Any?
     private var keyMonitor: Any?
 
@@ -55,6 +56,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                     action: { voice.keyDown() }, release: { voice.keyUp() })
         if !voiceKey.register() { store.errorText = "Option-Shift-Space is taken by another app; use the mic button to talk." }
         self.voiceKey = voiceKey
+        // F5 alone does the same, as a single key to tap.
+        let voiceF5 = GlobalHotKey(keyCode: kVK_F5, modifiers: 0, id: 3,
+                                   action: { voice.keyDown() }, release: { voice.keyUp() })
+        if !voiceF5.register() { store.voice.note("F5 is taken by another app; use Option-Shift-Space to talk.") }
+        self.voiceF5 = voiceF5
         if store.isExpanded {
             panelController.expand()
         }

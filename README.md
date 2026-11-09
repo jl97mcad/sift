@@ -127,8 +127,9 @@ printf '%s' "$OPENROUTER_KEY" | sift voice key -
 sift voice test
 ```
 
-Hold Option-Shift-Space to talk to the open seat and let go to send (or tap
-it, or the mic button, talk, and tap again). Pause the reply from the seat's
+Tap F5 (or Option-Shift-Space) to talk to the open seat, and tap again to
+send; or hold it while you talk and let go to send. The mic button does the
+same. If F5 is a media key on your keyboard, use fn-F5. Pause the reply from the seat's
 status line; the head glows while voice is on.
 Sift transcribes with Whisper turbo and reads the reply aloud with Fish Audio
 Drama 3, both through OpenRouter, sentence by sentence while the agent is
