@@ -114,10 +114,9 @@
   <button id="talk" aria-label="Tap to talk"><span class="halo"></span><span class="orb"></span></button>
   <div id="hint" role="status">Tap to talk</div>
 </footer>
-<audio id="voice" playsinline></audio>
 <script>
 const $ = (id) => document.getElementById(id);
-const empty = $("empty"), button = $("talk"), hint = $("hint"), chip = $("chip"), thread = $("thread"), voice = $("voice");
+const empty = $("empty"), button = $("talk"), hint = $("hint"), chip = $("chip"), thread = $("thread");
 let controller, recorder, chunks = [], stream, meter, meterContext, state = "idle", turn = 0, queue = [], playing = false, stopped = false;
 
 const labels = { idle: ["Ready", "Tap to talk"], starting: ["Ready", "Opening the microphone…"],
@@ -142,27 +141,58 @@ function newTurn() {
   return { box, you, steps, reply };
 }
 
+// Replies play through one Web Audio context made inside a press. iPhone lets a context that was
+// started by a tap keep playing later clips; a plain <audio> element only played the first one.
+let player, current;
+function unlockPlayer() {
+  player = player ?? new (window.AudioContext || window.webkitAudioContext)();
+  player.resume();
+  const silence = player.createBufferSource();
+  silence.buffer = player.createBuffer(1, 1, 22050);
+  silence.connect(player.destination);
+  silence.start(0);
+}
+
+async function playClip(bytes, mine) {
+  const buffer = await player.decodeAudioData(bytes);
+  if (stopped || turn !== mine) return; // stopped while it decoded
+  if (player.state !== "running") await player.resume();
+  await new Promise((done) => {
+    const source = player.createBufferSource();
+    source.buffer = buffer;
+    source.connect(player.destination);
+    source.onended = done;
+    current = source;
+    if (state === "waiting") set("speaking"); // only once audio really starts
+    source.start();
+  });
+  current = null;
+}
+
 async function playQueue(mine) {
   if (playing) return;
   playing = true;
   while (queue.length && !stopped && turn === mine) {
-    const url = queue.shift();
-    voice.src = url;
-    const ended = new Promise((done) => { voice.onended = done; voice.onerror = done; voice.onpause = done; });
-    try { await voice.play(); if (state === "waiting") set("speaking"); await ended; } catch {}
-    if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+    const next = queue.shift();
+    try {
+      const bytes = typeof next === "string" ? await (await fetch(next)).arrayBuffer() : next;
+      if (stopped || turn !== mine) break;
+      if (bytes.byteLength) await playClip(bytes, mine);
+    } catch (error) {
+      console.warn("Sift voice: a clip didn't play", error);
+    }
   }
   playing = false;
 }
-function enqueue(url, mine) { queue.push(url); playQueue(mine); }
+function enqueue(clip, mine) { queue.push(clip); playQueue(mine); }
+function stopVoice() { queue = []; try { current?.stop(); } catch {} current = null; }
 
 // iPhone: record in a call-style session, then switch back so replies play out loud through
 // the speaker, even with the silent switch on.
 function audioMode(type) { try { if (navigator.audioSession) navigator.audioSession.type = type; } catch {} }
 
-function clipUrl(base64) {
-  const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
-  return URL.createObjectURL(new Blob([bytes], { type: "audio/mpeg" }));
+function clipBytes(base64) {
+  return Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)).buffer;
 }
 
 async function start(context) {
@@ -188,7 +218,7 @@ async function start(context) {
 async function finish() {
   set("waiting", "Okay, let me look…");
   const mine = ++turn;
-  stopped = false; queue = [];
+  stopped = false; stopVoice();
   clearInterval(meter); meterContext?.close();
   document.documentElement.style.setProperty("--level", 0);
   const done = new Promise((resolve) => (recorder.onstop = resolve));
@@ -245,7 +275,7 @@ async function finish() {
           view.steps.querySelectorAll(".step").forEach((s) => s.classList.add("done"));
           view.reply.textContent = event.text.replace(/\*\*|__|`/g, "");
         } else if (event.type === "audio") {
-          enqueue(clipUrl(event.data), mine);
+          enqueue(clipBytes(event.data), mine);
         } else if (event.type === "error") {
           view.box.append(el("p", "note", event.message));
         }
@@ -264,6 +294,7 @@ async function finish() {
 
 let pressedAt = 0, listeningAt = 0;
 function press() {
+  unlockPlayer(); // every press, so the reply can always play
   if (state === "idle") {
     pressedAt = Date.now();
     set("starting");
@@ -279,14 +310,14 @@ function press() {
   } else if (state === "listening") {
     finish();
   } else if (state === "waiting" || state === "speaking") {
-    stopped = true; turn++; queue = []; voice.pause(); controller?.abort();
+    stopped = true; turn++; stopVoice(); controller?.abort();
     set("idle", "Stopped. The answer stays in Paseo.");
   }
 }
 // Tap to start and tap to send, or hold while you talk and let go to send.
 button.addEventListener("pointerdown", (event) => {
   event.preventDefault();
-  button.setPointerCapture?.(event.pointerId);
+  try { button.setPointerCapture(event.pointerId); } catch {} // capture is a nicety, never a blocker
   press();
 });
 const release = () => {
