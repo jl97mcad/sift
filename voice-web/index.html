@@ -180,6 +180,7 @@ async function start(context) {
     let peak = 0; for (const v of data) peak = Math.max(peak, Math.abs(v - 128));
     document.documentElement.style.setProperty("--level", Math.min(1, peak / 128 * 2.5).toFixed(2));
   }, 50);
+  listeningAt = Date.now();
   set("listening");
 }
 
@@ -203,8 +204,7 @@ async function finish() {
     const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
     controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 330_000);
-    const response = await fetch("/api/talk", { method: "POST", headers: { "Content-Type": blob.type }, body: blob, signal: controller.signal })
-      .finally(() => clearTimeout(timer));
+    const response = await fetch("/api/talk", { method: "POST", headers: { "Content-Type": blob.type }, body: blob, signal: controller.signal });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Something went wrong.");
     const reader = response.body.getReader(), decoder = new TextDecoder();
     let buffer = "";
@@ -233,6 +233,7 @@ async function finish() {
         scroll();
       }
     }
+    clearTimeout(timer); // only once the whole streamed answer has arrived
     view.steps.querySelectorAll(".step").forEach((s) => s.classList.add("done"));
     while ((playing || queue.length) && turn === mine && !stopped) await new Promise((r) => setTimeout(r, 120));
     settle();
@@ -242,7 +243,7 @@ async function finish() {
   }
 }
 
-let pressedAt = 0;
+let pressedAt = 0, listeningAt = 0;
 function press() {
   if (state === "idle") {
     pressedAt = Date.now();
@@ -266,13 +267,13 @@ function press() {
 // Tap to start and tap to send, or hold while you talk and let go to send.
 button.addEventListener("pointerdown", (event) => { event.preventDefault(); press(); });
 button.addEventListener("pointerup", () => {
-  if (pressedAt && Date.now() - pressedAt > 450) {
-    const waitForMic = () => state === "listening" ? finish() : state === "starting" && setTimeout(waitForMic, 50);
-    waitForMic();
-  }
+  // A hold sends on release; a slow tap (let go before the mic had been open a moment) keeps listening.
+  if (pressedAt && state === "listening" && Date.now() - listeningAt > 700) finish();
   pressedAt = 0;
 });
-button.addEventListener("keydown", (event) => { if (event.key === " " || event.key === "Enter") { event.preventDefault(); press(); } });
+button.addEventListener("keydown", (event) => {
+  if ((event.key === " " || event.key === "Enter") && !event.repeat) { event.preventDefault(); press(); }
+});
 set("idle");
 </script>
 </body>
