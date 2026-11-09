@@ -134,6 +134,10 @@ Sift transcribes with Whisper turbo and reads the reply aloud with Fish Audio
 Drama 3, both through OpenRouter, sentence by sentence while the agent is
 still writing. Pressing the key again cuts the voice off. See ADRs 0012-0014.
 
+The Voice seat is a Paseo session started with
+[docs/voice-operator.md](docs/voice-operator.md): it reads other sessions
+directly and sends work straight to the session that owns it.
+
 ## CLI
 
 Every command prints one JSON object and exits non-zero on failure.
