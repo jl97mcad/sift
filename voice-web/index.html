@@ -61,6 +61,7 @@ async function start(context) {
 }
 
 async function finish() {
+  set("waiting", "Thinking…", "Okay, let me look."); // at once, so a second tap can't stop twice
   const mine = ++turn;
   const settle = (label, text) => { if (turn === mine) set("idle", label, text); };
   clearInterval(meter); meter.context.close(); button.style.setProperty("--level", 0);
@@ -69,7 +70,8 @@ async function finish() {
   // The acknowledgement plays inside the tap, which also unlocks audio for the reply on iPhone.
   voice.src = "/api/ack"; voice.play().catch(() => {});
   await stopped;
-  set("waiting", "Thinking…", "Okay, let me look.");
+  stream.getTracks().forEach((track) => track.stop()); // the microphone is off between turns
+  stream = null;
   const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
   try {
     const response = await fetch("/api/talk", { method: "POST", headers: { "Content-Type": blob.type }, body: blob });

@@ -26,12 +26,9 @@ async function body(request) {
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > MAX_AUDIO) {
-      request.destroy();
-      throw new Error("Recording too long.");
-    }
-    chunks.push(chunk);
+    if (size <= MAX_AUDIO) chunks.push(chunk); // read the rest so the phone gets the answer
   }
+  if (size > MAX_AUDIO) throw new Error("Recording too long.");
   return Buffer.concat(chunks);
 }
 
@@ -59,7 +56,9 @@ createServer(async (request, response) => {
         await agent.run(heard, { timeoutMs: 5 * 60_000 });
         const page = await agent.timeline.refetch({ direction: "tail", limit: 80, projection: "projected" });
         const reply = latestReply(page.entries);
-        return send(response, 200, { heard, reply, clips: reply ? await speakText(reply) : [] });
+        // If speech fails, the words still reach the phone.
+        const clips = reply ? await speakText(reply).catch((error) => (console.error(error), [])) : [];
+        return send(response, 200, { heard, reply, clips });
       } finally {
         busy = false;
       }

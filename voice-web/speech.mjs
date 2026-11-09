@@ -71,8 +71,9 @@ export function pieces(text, limit = 280) {
 
 /** The assistant's words since the last prompt. */
 export function latestReply(entries) {
-  let start = 0;
+  let start = -1;
   entries.forEach((entry, index) => { if (entry.item.type === "user_message") start = index + 1; });
+  if (start < 0) return ""; // the prompt fell out of the page: never read an older reply
   return entries.slice(start).filter((e) => e.item.type === "assistant_message" && e.item.text).map((e) => e.item.text).join("\n\n");
 }
 
