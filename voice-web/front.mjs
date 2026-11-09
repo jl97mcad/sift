@@ -54,7 +54,8 @@ export async function respond(config, history, userText, handlers, onText) {
       const result = handler ? await handler(args) : "Unknown tool.";
       history.push({ role: "tool", tool_call_id: call.id, content: String(result) });
     }
-    if (text) break; // it already spoke alongside the call; don't make it talk twice
+    // It already spoke alongside a hand-off, so don't make it talk twice; a status check must be spoken.
+    if (text && calls.every((call) => call.function.name === "delegate")) break;
   }
   history.splice(0, Math.max(0, history.length - HISTORY));
   while (history[0] && history[0].role !== "user") history.shift(); // never start mid-exchange
@@ -98,8 +99,12 @@ async function stream(config, history, onText) {
 /** A short spoken line when a delegated task finishes. */
 export async function summarise(config, history, job) {
   let spoken = "";
+  const at = history.length;
   await respond(config, history,
     `(System note, not ${config.person}: ${config.worker.name} finished "${job.task}". Its reply: ${job.reply.slice(0, 3000) || "(no reply)"}. Tell ${config.person} the result in one or two short spoken sentences, starting with what it was about.)`,
     {}, (delta) => (spoken += delta));
+  // Keep what was said, not the note: later turns must never read it as words the person said.
+  const note = history.findIndex((message, index) => index >= at - 1 && message.role === "user" && String(message.content).startsWith("(System note"));
+  if (note >= 0) history.splice(note, 1, { role: "user", content: `(${config.worker.name} finished: ${job.task})` });
   return spoken;
 }

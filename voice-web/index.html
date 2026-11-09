@@ -199,6 +199,7 @@ function end(text) {
   set("off", text);
 }
 function record() {
+  if (recorder?.state === "recording") { recorder.ondataavailable = null; recorder.stop(); } // only one recorder feeds a turn
   const type = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"].find((t) => MediaRecorder.isTypeSupported(t)) ?? "";
   recorder = new MediaRecorder(stream, type ? { mimeType: type } : {});
   chunks = [];
@@ -286,7 +287,7 @@ events.onmessage = (message) => {
   if (event.type === "say") {
     add(el("p", "sift", event.text));
     if (phase === "hearing" || phase === "thinking") later.push(...event.audio); // never over your own turn
-    else if (player) event.audio.forEach(speak);
+    else if (player) { if (!on) hint.textContent = "News from your worker"; event.audio.forEach(speak); }
   }
 };
 fetch("/api/config").then((r) => r.json()).then((c) => { $("name").textContent = c.assistant; document.title = c.assistant; c.jobs.forEach(showJob); });
