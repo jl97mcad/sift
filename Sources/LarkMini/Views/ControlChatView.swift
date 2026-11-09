@@ -460,6 +460,7 @@ struct VoiceButton: View {
                 .frame(width: 32, height: 32)
         }
         .buttonStyle(.plain)
+        .disabled(phase == .transcribing)
         .help(help).accessibilityLabel(help)
     }
 

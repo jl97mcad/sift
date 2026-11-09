@@ -13,14 +13,14 @@ of silence, transcribes on the Mac and only speaks through a `speak` tool.
 
 - Hold Option-Shift-Space (or tap it to start and again to send, or the mic
   button in a seat's composer) to record. Releasing sends; there is no
-  silence detection.
+  silence detection. A recording stops itself after two minutes.
 - The recording (16 kHz mono AAC) goes to OpenRouter
   `openai/whisper-large-v3-turbo`. The transcript is sent to the open seat as
   the person, with a one-line preamble asking for short spoken replies.
 - Sift follows that seat's new assistant messages and reads them out with
   OpenRouter `fish-audio/drama-3`, finished sentences first while the agent is
-  still writing, fetching the next piece while one plays. Markdown, code
-  blocks and URLs are not read out. Talking again cuts the voice off. It stops
+  still writing, fetching the next piece while one plays. Markdown, fenced
+  code blocks and URLs are not read out. Talking again cuts the voice off. It stops
   following when the turn ends, or after 15 minutes.
 - The OpenRouter key lives in `Application Support/Sift/openrouter-key`
   (0600), set with `sift voice key -` from stdin. `sift voice test` proves

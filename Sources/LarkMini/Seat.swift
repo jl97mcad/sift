@@ -360,8 +360,8 @@ final class SeatSession: ObservableObject, Identifiable {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !sending else { return }
         draft = ""
-        // Restore only into an empty composer, never over what was typed meanwhile.
-        if await !send(text: text), draft.isEmpty { draft = text }
+        // Put it back without losing anything typed meanwhile.
+        if await !send(text: text) { draft = draft.isEmpty ? text : text + "\n" + draft }
     }
 
     /// Sends a prompt as the person; false if it did not go.

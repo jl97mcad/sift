@@ -157,6 +157,7 @@ final class VoiceMode: ObservableObject {
     /// Tells the agent its reply will be heard, not read.
     nonisolated static let preamble = "(Spoken through Sift voice. Reply in a few short plain sentences that read well aloud; no tables or code unless asked.)\n\n"
     private static let holdThreshold: TimeInterval = 0.4
+    private static let longestTurn: TimeInterval = 120
     private static let followFor: UInt64 = 15 * 60
     /// A reply that stopped changing while the seat shows no turn is treated as finished.
     private static let quietFor: UInt64 = 4
@@ -200,6 +201,7 @@ final class VoiceMode: ObservableObject {
         switch phase {
         case .listening: finish()
         case .speaking: stopSpeaking()
+        case .transcribing: break
         default: start(seat)
         }
     }
@@ -232,6 +234,11 @@ final class VoiceMode: ObservableObject {
             seatId = seat.id
             phase = .listening
             NSSound(named: "Tink")?.play()
+            // A release the system swallowed must not leave the microphone on.
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.longestTurn) { [weak self, weak recorder] in
+                guard let self, let recorder, self.recorder === recorder else { return }
+                self.finish()
+            }
         } catch {
             store?.errorText = error.localizedDescription
         }
@@ -333,9 +340,10 @@ final class VoiceMode: ObservableObject {
                     self.phase = .speaking
                     await self.play(audio)
                 } catch {
-                    self.store?.errorText = "Voice: \(error.localizedDescription)"
+                    if !Task.isCancelled { self.store?.errorText = "Voice: \(error.localizedDescription)" }
                 }
             }
+            next?.cancel()
             guard let self = self, !Task.isCancelled else { return }
             self.speaker = nil
             if self.phase == .speaking { self.phase = self.following == nil ? .idle : .waiting }
