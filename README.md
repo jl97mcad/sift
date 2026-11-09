@@ -130,11 +130,13 @@ sift voice test
 Hold Option-Shift-Space to talk to the open seat and let go to send (or tap
 it, talk, and tap again). Double-tap it, or tap the mic button, for a
 hands-free conversation: Sift sends when you pause, reads the reply and
-listens again; double-tap or End stops it. Pause or stop the reply from the
+listens again. Double-tap or End stops it, and so do 30 seconds of silence or
+a turn too noisy to end. Pause or stop the reply from the
 line above the composer; the head glows while voice is on.
 Sift transcribes with Whisper turbo and reads the reply aloud with Fish Audio
 Drama 3, both through OpenRouter, sentence by sentence while the agent is
-still writing. Talking again stops the voice. See ADR 0012.
+still writing. Pressing the key again cuts the voice off. See ADRs 0012
+and 0013.
 
 ## CLI
 

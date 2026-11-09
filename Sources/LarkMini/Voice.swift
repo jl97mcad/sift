@@ -160,7 +160,7 @@ final class VoiceMode: ObservableObject {
     enum Phase: Equatable { case idle, listening, transcribing, waiting, speaking, paused }
 
     @Published private(set) var phase = Phase.idle {
-        didSet { phase == .idle ? stopMeter() : startMeter() }
+        didSet { phase == .listening || phase == .speaking ? startMeter() : stopMeter() }
     }
     @Published private(set) var seatId: String?
     @Published private(set) var conversation = false
@@ -186,7 +186,10 @@ final class VoiceMode: ObservableObject {
     /// In a conversation, this long with nothing said ends it.
     private static let giveUpAfter: TimeInterval = 30
     /// Whisper's usual inventions for near-silence.
-    nonisolated private static let phantom: Set<String> = ["you", "thank you", "thanks for watching", "bye", "okay", "uh", "um"]
+    nonisolated private static let phantom: Set<String> = ["you", "thank you", "thanks for watching"]
+    /// In a conversation, a turn that never goes quiet this long is noise, not speech: it is
+    /// dropped and the conversation ends, so a loud room cannot run up paid turns.
+    private static let longestConversationTurn: TimeInterval = 30
 
     weak var store: Store?
     private var recorder: AVAudioRecorder?
@@ -199,6 +202,8 @@ final class VoiceMode: ObservableObject {
     private var noiseFloor: Float = 0
     private var loudestPeak: Float = -160
     private var spokeAt: Date?
+    /// Which recording a transcription belongs to, so a late one from an earlier turn is ignored.
+    private var turn = 0
 
     private var following: AnyCancellable?
     private var followGeneration = 0
@@ -228,16 +233,19 @@ final class VoiceMode: ObservableObject {
             else if let seat = store?.seat { discardRecording(); startConversation(seat) }
             return
         }
-        lastPress = now
+        lastPress = nil
         switch phase {
         case .listening: finish()
         case .speaking, .paused:
             stopSpeaking()
             if let seat = seat ?? store?.seat { start(seat); pressedAt = now }
-        default:
+        case .transcribing: break
+        case .idle, .waiting:
             guard let seat = store?.seat else { store?.errorText = "Add an agent seat to talk to."; return }
             start(seat)
             pressedAt = now
+            // Only a press that opened the microphone can be the first half of a double-tap.
+            if phase == .listening, !conversation { lastPress = now }
         }
     }
 
@@ -253,7 +261,7 @@ final class VoiceMode: ObservableObject {
     }
 
     func startConversation(_ seat: SeatSession) {
-        if conversation { endConversation() }
+        endConversation()
         conversation = true
         seatId = seat.id
         start(seat)
@@ -264,12 +272,16 @@ final class VoiceMode: ObservableObject {
         discardRecording()
         stopSpeaking()
         stopFollowing()
+        turn += 1 // a transcription in flight is dropped
         phase = .idle
     }
 
     func togglePause() {
         switch phase {
-        case .speaking: player?.pause(); phase = .paused
+        case .speaking:
+            guard let player, player.isPlaying else { return } // between clips there is nothing to pause
+            player.pause()
+            phase = .paused
         case .paused: player?.play(); phase = .speaking
         default: break
         }
@@ -287,11 +299,13 @@ final class VoiceMode: ObservableObject {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: break
         case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .audio) { [weak self, weak seat] granted in
+            // Never open the microphone on its own once the prompt is answered: press again.
+            conversation = false
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
                 DispatchQueue.main.async {
                     MainActor.assumeIsolated {
-                        guard let self, let seat else { return }
-                        if granted { self.start(seat) } else { self.conversation = false }
+                        self?.store?.errorText = granted ? "Microphone allowed. Press again to talk."
+                            : "Sift can't use the microphone. Allow it in System Settings → Privacy & Security → Microphone."
                     }
                 }
             }
@@ -338,6 +352,8 @@ final class VoiceMode: ObservableObject {
         NSSound(named: "Pop")?.play()
         let audio = try? Data(contentsOf: recording)
         try? FileManager.default.removeItem(at: recording)
+        turn += 1
+        let thisTurn = turn
         // Too short or never loud enough: nothing was said, so nothing is sent or paid for.
         guard length > 0.3, loudestPeak >= Self.silentPeak, let audio, let seat,
               let key = SpeechAPI.storedKey() else {
@@ -349,11 +365,15 @@ final class VoiceMode: ObservableObject {
         Task {
             do {
                 let text = try await SpeechAPI(key: key).transcribe(audio, filename: "speech.m4a")
-                guard phase == .transcribing else { return } // cancelled meanwhile
+                guard turn == thisTurn, phase == .transcribing else { return } // cancelled meanwhile
                 guard !Self.isPhantom(text) else { phase = .idle; listenAgain(); return }
                 follow(seat)
+                // A typed message still going out goes first.
+                for _ in 0..<50 where seat.sending { try? await Task.sleep(nanoseconds: 200_000_000) }
+                guard turn == thisTurn else { return }
                 if await !seat.send(text: Self.preamble + text) { stopFollowing(); conversation = false }
             } catch {
+                guard turn == thisTurn else { return }
                 store?.errorText = "Voice: \(error.localizedDescription)"
                 conversation = false
                 if phase == .transcribing { phase = .idle }
@@ -427,10 +447,13 @@ final class VoiceMode: ObservableObject {
         if power > -100 { noiseFloor = noiseFloor == 0 ? power : min(noiseFloor, power) }
         let threshold = max(noiseFloor + Self.speechAboveFloor, Self.speechFloorLimit)
         if power > threshold { spokeAt = now }
-        if let spokeAt {
-            if now.timeIntervalSince(spokeAt) > Self.endOfTurn { finish() }
-        } else if now.timeIntervalSince(listenStarted) > Self.giveUpAfter {
+        if let spokeAt, now.timeIntervalSince(spokeAt) > Self.endOfTurn {
+            finish()
+        } else if spokeAt == nil, now.timeIntervalSince(listenStarted) > Self.giveUpAfter {
             endConversation()
+        } else if now.timeIntervalSince(listenStarted) > Self.longestConversationTurn {
+            endConversation()
+            store?.errorText = "Too noisy to hear where you stopped, so the conversation ended. Hold ⌥⇧Space to talk instead."
         }
     }
 
