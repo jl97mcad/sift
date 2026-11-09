@@ -36,7 +36,10 @@ struct ControlChatView: View {
             transcript
             // Outside the scroll view: an animating row inside lazy, bottom-anchored content
             // re-measured the whole transcript every frame and pegged the main thread.
-            if seat.needsInput || seat.activity != nil || ["archived", "error"].contains(seat.status) {
+            // One line: while voice is on for this seat, it says what the voice and the agent are doing.
+            if store.voice.isActive(for: seat) {
+                VoiceStatus(voice: store.voice, seat: seat).padding(.horizontal, 16).padding(.top, 8)
+            } else if seat.needsInput || seat.activity != nil || ["archived", "error"].contains(seat.status) {
                 liveState.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.top, 8)
             }
             if let error = store.errorText { ErrorBar(text: error) }
@@ -139,7 +142,6 @@ struct ControlChatView: View {
 
     private var composer: some View {
         VStack(spacing: 6) {
-            VoiceStatus(voice: store.voice, seat: seat)
             HStack(alignment: .bottom, spacing: 8) {
                 TextField("Message \(seat.label)…", text: $seat.draft, axis: .vertical)
                     .textFieldStyle(.plain).font(.system(size: 13)).lineLimit(2...5)
@@ -444,7 +446,8 @@ private struct ReplyBlockView: View {
     }
 }
 
-/// Starts or ends a hands-free conversation with this seat. Holding ⌥⇧Space is push-to-talk.
+/// Talk to this seat: tap, talk, tap to send. Tapping while it speaks cuts it off. ⌥⇧Space does the
+/// same from anywhere, and holding it is push-to-talk.
 struct VoiceButton: View {
     @ObservedObject var voice: VoiceMode
     @ObservedObject var meter: VoiceMeter
@@ -456,17 +459,16 @@ struct VoiceButton: View {
         self.seat = seat
     }
 
-    private var mine: Bool { voice.seatId == seat.id }
-    private var on: Bool { mine && (voice.conversation || voice.phase == .listening) }
+    private var phase: VoiceMode.Phase { voice.seatId == seat.id ? voice.phase : .idle }
 
     var body: some View {
-        Button { voice.toggleConversation(seat) } label: {
-            Image(systemName: on ? "mic.fill" : "mic")
+        Button { voice.toggle(seat) } label: {
+            Image(systemName: icon)
                 .font(.system(size: 13, weight: .semibold)).frame(width: 28, height: 28)
-                .foregroundStyle(on ? Color.black : SiftStyle.secondary)
-                .background(on ? SiftStyle.green : Color.white.opacity(0.05), in: Circle())
+                .foregroundStyle(phase == .listening ? Color.black : SiftStyle.secondary)
+                .background(phase == .listening ? SiftStyle.green : Color.white.opacity(0.05), in: Circle())
                 .background {
-                    if mine && voice.phase == .listening {
+                    if phase == .listening {
                         Circle().fill(SiftStyle.green.opacity(0.35))
                             .frame(width: 28 + 14 * meter.level, height: 28 + 14 * meter.level)
                     }
@@ -474,16 +476,32 @@ struct VoiceButton: View {
                 .frame(width: 32, height: 32)
         }
         .buttonStyle(.plain)
-        .help(on ? "End the conversation" : "Talk with \(seat.label), hands-free (or hold ⌥⇧Space)")
-        .accessibilityLabel(on ? "End the conversation" : "Talk with \(seat.label)")
+        .help(help).accessibilityLabel(help)
+    }
+
+    private var icon: String {
+        switch phase {
+        case .listening: return "mic.fill"
+        case .speaking, .paused: return "stop.fill"
+        default: return "mic"
+        }
+    }
+
+    private var help: String {
+        switch phase {
+        case .listening: return "Send what you said"
+        case .speaking, .paused: return "Stop speaking"
+        default: return "Talk to \(seat.label) (or hold ⌥⇧Space)"
+        }
     }
 }
 
-/// What the voice is doing, with a live level while you or the agent talk. Shown above the composer.
+/// What the voice is doing, in the agent's live-state line: level bars while you or the agent talk,
+/// the agent's own activity while it works, and the voice's notes.
 struct VoiceStatus: View {
     @ObservedObject var voice: VoiceMode
     @ObservedObject var meter: VoiceMeter
-    let seat: SeatSession
+    @ObservedObject var seat: SeatSession
 
     init(voice: VoiceMode, seat: SeatSession) {
         self.voice = voice
@@ -492,51 +510,36 @@ struct VoiceStatus: View {
     }
 
     var body: some View {
-        if voice.seatId == seat.id, voice.phase != .idle || voice.conversation {
-            HStack(spacing: 8) {
-                LevelBars(level: meter.level, color: tint)
-                Text(label).font(.system(size: 12)).foregroundStyle(SiftStyle.secondary).lineLimit(1)
-                Spacer(minLength: 0)
-                if voice.phase == .speaking || voice.phase == .paused {
-                    Button { voice.togglePause() } label: {
-                        Image(systemName: voice.phase == .paused ? "play.fill" : "pause.fill")
-                            .font(.system(size: 11, weight: .semibold))
-                    }
-                    .buttonStyle(.plain).foregroundStyle(SiftStyle.secondary)
-                    .help(voice.phase == .paused ? "Carry on speaking" : "Pause")
-                    .accessibilityLabel(voice.phase == .paused ? "Resume" : "Pause")
-                    Button { voice.stopSpeaking() } label: {
-                        Image(systemName: "stop.fill").font(.system(size: 11, weight: .semibold))
-                    }
-                    .buttonStyle(.plain).foregroundStyle(SiftStyle.secondary).help("Stop speaking")
-                    .accessibilityLabel("Stop speaking")
-                }
-                if voice.conversation {
-                    Button("End") { voice.endConversation() }
-                        .buttonStyle(.plain).font(.system(size: 12, weight: .medium)).foregroundStyle(SiftStyle.green)
-                        .help("End the conversation (double-tap ⌥⇧Space)")
-                }
+        HStack(spacing: 8) {
+            if voice.phase == .listening || voice.phase == .speaking {
+                LevelBars(level: meter.level, color: voice.phase == .listening ? SiftStyle.green : .white)
+            } else if voice.phase == .transcribing || voice.phase == .waiting {
+                ActivityDots()
             }
-            .padding(.horizontal, 4)
-            .accessibilityElement(children: .contain)
+            Text(label).font(.system(size: 12)).foregroundStyle(SiftStyle.secondary).lineLimit(1)
+            Spacer(minLength: 0)
+            if voice.phase == .speaking || voice.phase == .paused {
+                Button { voice.togglePause() } label: {
+                    Image(systemName: voice.phase == .paused ? "play.fill" : "pause.fill")
+                        .font(.system(size: 11, weight: .semibold)).frame(width: 20, height: 20)
+                }
+                .buttonStyle(.plain).foregroundStyle(SiftStyle.secondary)
+                .help(voice.phase == .paused ? "Carry on" : "Pause")
+                .accessibilityLabel(voice.phase == .paused ? "Resume" : "Pause")
+            }
         }
-    }
-
-    private var tint: Color {
-        switch voice.phase {
-        case .listening: return SiftStyle.green
-        case .speaking: return .white
-        default: return SiftStyle.muted
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
     }
 
     private var label: String {
+        if let notice = voice.notice, voice.phase == .idle { return notice }
         switch voice.phase {
-        case .idle: return "In conversation"
-        case .listening: return voice.conversation ? "Listening · pause to send" : "Listening · let go or tap to send"
+        case .idle: return ""
+        case .listening: return "Listening · let go or tap to send"
         case .transcribing: return "Writing down what you said"
-        case .waiting: return "\(seat.label) is thinking"
-        case .speaking: return "\(seat.label) is speaking · ⌥⇧Space to cut in"
+        case .waiting: return seat.activity ?? "\(seat.label) is thinking"
+        case .speaking: return "Speaking · ⌥⇧Space to cut in"
         case .paused: return "Paused"
         }
     }
@@ -578,7 +581,7 @@ struct VoiceHalo: View {
     var body: some View {
         let level = reduceMotion ? min(meter.level, 0.3) : meter.level
         ZStack {
-            if voice.phase != .idle || voice.conversation {
+            if voice.phase != .idle {
                 Circle().fill(color.opacity(0.18 + 0.4 * level))
                     .frame(width: size + 4 + 20 * level, height: size + 4 + 20 * level)
                 Circle().strokeBorder(color.opacity(voice.phase == .listening ? 0.95 : 0.6), lineWidth: 2)
