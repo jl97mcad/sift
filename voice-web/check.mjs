@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { plain, pieces, settledLength, stepLabel, progressLine } from "./speech.mjs";
+import { plain, pieces, settledLength, stepLabel, progressLine, isPhantom } from "./speech.mjs";
 assert.equal(plain("**Shop** is [merged](http://x).\n```sh\nrm -rf /\n```"), "Shop is merged.");
 assert.deepEqual(pieces("One. Two. Three."), ["One.", "Two. Three."]);
 assert.equal(settledLength("Done. Still writ"), 6);
@@ -9,4 +9,11 @@ assert.equal(stepLabel({ type: "assistant_message", text: "x" }), null);
 assert.equal(stepLabel({ type: "tool_call", name: "task_notification", detail: {} }), null);
 assert.equal(stepLabel({ type: "tool_call", name: "Bash", detail: { type: "shell" } }), "Running a command");
 assert.equal(progressLine("Looking in Pocket", 90), "Still looking in Pocket. It's taking a while, but it's still going.");
+assert.ok(isPhantom("Продолжение следует..."));
+assert.ok(isPhantom("Bye. Bye. Okay. you"));
+assert.ok(isPhantom(" Thank you."));
+assert.ok(!isPhantom("Okay, check on the Mattel plan."));
+assert.ok(!isPhantom("Bye for now, but first queue the plan."));
+assert.ok(!isPhantom("Bye."));
+assert.ok(!isPhantom("Привет", "ru"));
 console.log("ok");

@@ -125,9 +125,10 @@
 const $ = (id) => document.getElementById(id);
 const empty = $("empty"), button = $("talk"), hint = $("hint"), chip = $("chip"), thread = $("thread");
 // ponytail: fixed loudness thresholds (0..1 RMS); tune here if a room cuts turns short or hears echoes.
-const SPEECH = 0.035, BARGE = 0.09, END_SILENCE = 800, MIN_SPEECH = 300, MAX_TURN = 60_000, IDLE_PAUSE = 45_000;
+const SPEECH = 0.045, BARGE = 0.12, END_SILENCE = 800, MIN_SPEECH = 450, MAX_TURN = 60_000, IDLE_PAUSE = 45_000, AFTER_SPEAKING = 700;
+let floor = 0.01, deaf = 0; // the room's quiet level, and a moment after it speaks when it doesn't listen
 
-let on = false, phase = "off", stream, mic, analyser, data, recorder, chunks = [], speechStart = 0, lastLoud = 0, listenSince = 0, loopTimer;
+let endAfterSpeech = false, on = false, phase = "off", stream, mic, analyser, data, recorder, chunks = [], speechStart = 0, lastLoud = 0, listenSince = 0, loopTimer;
 let player, current, queue = [], playing = false, generation = 0, controller, later = [];
 
 function set(next, text) {
@@ -170,10 +171,11 @@ async function playQueue() {
   }
   if (mine !== generation) return; // a newer loop owns the flags now
   current = null; playing = false;
+  if (endAfterSpeech) { endAfterSpeech = false; end("Bye. Tap to talk again."); return; }
   if (on && phase === "speaking") listen();
 }
 function speak(b64) { queue.push(clipBytes(b64)); playQueue(); }
-function hush() { generation += 1; queue = []; try { current?.stop(); } catch {} current = null; playing = false; }
+function hush() { endAfterSpeech = false; generation += 1; queue = []; try { current?.stop(); } catch {} current = null; playing = false; }
 
 // ---- Listening: the microphone stays open for the conversation; loudness decides the turns.
 async function begin() {
@@ -207,7 +209,7 @@ function record() {
   recorder.start();
 }
 function listen() {
-  record(); speechStart = 0; listenSince = Date.now(); set("listening");
+  record(); speechStart = 0; lastLoud = 0; listenSince = Date.now(); deaf = Date.now() + AFTER_SPEAKING; set("listening");
   // News that arrived while you were talking plays now.
   if (later.length) { const news = later; later = []; news.forEach(speak); }
 }
@@ -228,7 +230,9 @@ function tick() {
     return;
   }
   if (phase === "listening" || phase === "hearing") {
-    if (rms > SPEECH) { lastLoud = now; if (!speechStart) speechStart = now; if (phase === "listening" && now - speechStart > 150) set("hearing"); }
+    if (now < deaf) return; // the tail of its own voice is not you talking
+    if (phase === "listening") floor = floor * 0.97 + Math.min(rms, 0.05) * 0.03; // follow the room's hum
+    if (rms > Math.max(SPEECH, floor * 3)) { lastLoud = now; if (!speechStart) speechStart = now; if (phase === "listening" && now - speechStart > 150) set("hearing"); }
     if (phase === "hearing" && now - lastLoud > END_SILENCE && lastLoud - speechStart > MIN_SPEECH) send();
     else if (phase === "hearing" && now - listenSince > MAX_TURN) send();
     else if (phase === "listening" && !speechStart && now - listenSince > IDLE_PAUSE) end("Paused. Tap to talk again.");
@@ -262,9 +266,11 @@ async function send() {
         else if (event.type === "text") { if (!reply.isConnected) add(reply); reply.textContent = event.text; }
         else if (event.type === "audio") { spoke = true; speak(event.data); }
         else if (event.type === "error") add(el("p", "note", event.message));
+        else if (event.type === "end") { endAfterSpeech = true; }
       }
     }
-    if (on && mine === generation && !spoke && !playing) listen();
+    if (endAfterSpeech && !spoke && !playing) { endAfterSpeech = false; end("Bye. Tap to talk again."); }
+    else if (on && mine === generation && !spoke && !playing) listen();
   } catch (error) {
     if (error.name !== "AbortError") add(el("p", "note", error.message));
     if (on && phase === "thinking") listen();

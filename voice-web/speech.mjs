@@ -12,10 +12,25 @@ export async function key() {
   return value;
 }
 
-export async function transcribe(audio, type) {
+/** Phrases Whisper invents from silence or noise (often in another language); never sent as speech. */
+export function isPhantom(text, language = "en") {
+  const t = text.trim().toLowerCase().replace(/[.!?,…\s]+$/u, "");
+  if (!t) return true;
+  // Whisper "hears" another script in English-only noise; only check when the language is English.
+  if (language === "en" && /[^\u0000-\u024f\u2000-\u206f\u2018-\u201f]/u.test(t)) return true;
+  if (/(thanks for watching|subtitles by|to be continued|like and subscribe|amara\.org)/.test(t)) return true;
+  // Strings of filler words. A single real "Bye." or "Okay." gets through; "you" alone or a run of three doesn't.
+  const words = t.split(/[^a-z']+/).filter(Boolean);
+  const filler = new Set(["you", "thank", "thanks", "bye", "okay", "ok", "um", "uh", "hmm"]);
+  if (words.length && words.every((w) => filler.has(w))) return words.join(" ") === "you" || words.join(" ") === "thank you" || words.length >= 3;
+  return false;
+}
+
+export async function transcribe(audio, type, language = "en") {
   const extension = type.includes("mp4") || type.includes("m4a") ? "m4a" : type.includes("ogg") ? "ogg" : type.includes("wav") ? "wav" : "webm";
   const form = new FormData();
   form.append("model", "openai/whisper-large-v3-turbo");
+  form.append("language", language); // a fixed language stops it inventing foreign "speech" from noise
   form.append("file", new Blob([audio], { type }), `speech.${extension}`);
   const response = await fetch(`${API}/audio/transcriptions`, {
     method: "POST", headers: { Authorization: `Bearer ${await key()}` }, body: form, signal: AbortSignal.timeout(30_000),

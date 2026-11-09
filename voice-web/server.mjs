@@ -5,7 +5,7 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { createPaseoClient } from "@getpaseo/client";
-import { pieces, plain, progressLine, settledLength, speakPiece, stepLabel, transcribe } from "./speech.mjs";
+import { isPhantom, pieces, plain, progressLine, settledLength, speakPiece, stepLabel, transcribe } from "./speech.mjs";
 import { respond, summarise } from "./front.mjs";
 
 const PORT = Number(process.env.PORT ?? 8771);
@@ -124,9 +124,8 @@ async function turn(request, response) {
   response.on("close", () => (open = false));
   const emit = (event) => open && response.write(JSON.stringify(event) + "\n");
   try {
-    const heard = await transcribe(audio, request.headers["content-type"] ?? "audio/webm");
-    // Near-silence comes back empty or as Whisper's usual "you".
-    if (!heard || /^(you|thank you)[.!]?$/i.test(heard)) return emit({ type: "heard", text: "" });
+    const heard = await transcribe(audio, request.headers["content-type"] ?? "audio/webm", config.language ?? "en");
+    if (isPhantom(heard, config.language ?? "en")) return emit({ type: "heard", text: "" });
     emit({ type: "heard", text: heard });
     await serial(async () => {
       let text = "";
@@ -138,7 +137,8 @@ async function turn(request, response) {
           speech = speech.then(async () => { const data = await clip; if (data) emit({ type: "audio", data }); });
         }
       };
-      await respond(config, history, heard, { delegate: ({ task }) => delegate(task?.trim() || heard), job_status: jobStatus }, (delta) => {
+      await respond(config, history, heard, { delegate: ({ task }) => delegate(task?.trim() || heard), job_status: jobStatus,
+        end_conversation: () => { emit({ type: "end" }); return "Ended. The phone stops listening after your goodbye."; } }, (delta) => {
         text += delta;
         emit({ type: "text", text });
         const ready = settledLength(text);
