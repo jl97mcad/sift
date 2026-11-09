@@ -131,3 +131,12 @@ export async function speakPiece(text) {
   return speak(text, await key());
 }
 
+
+/** A transcript that stops mid-thought ("take a look at the…"): wait for the rest instead of answering. */
+export function looksUnfinished(text) {
+  const t = text.trim().toLowerCase();
+  if (/(\.\.\.|…)$/.test(t)) return true;
+  const last = t.replace(/[.!?,;:]+$/, "").split(/\s+/).at(-1) ?? "";
+  return /[,;:-]$/.test(t) || new Set(["the", "a", "an", "and", "or", "but", "to", "of", "at", "in", "on", "for", "with", "about",
+    "that", "so", "because", "like", "my", "your", "our", "this", "these", "if", "then", "um", "uh", "er"]).has(last);
+}
