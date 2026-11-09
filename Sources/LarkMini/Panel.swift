@@ -170,7 +170,7 @@ final class PanelController {
 
     private func openFromHead() {
         expand()
-        if store.controlAttention != nil || store.needsYouUnseen { store.openControl() }
+        if let seat = store.attentionSeat { store.openSeat(seat) }
     }
 
     func show() {

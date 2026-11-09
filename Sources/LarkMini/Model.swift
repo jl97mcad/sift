@@ -213,27 +213,52 @@ struct ControlOption: Identifiable, Equatable {
     let name: String
 }
 
-struct ControlSeat: Codable, Equatable {
+/// One agent seat. `id` is fixed when the seat is added and survives handoffs, so device-local
+/// state (seen needs, drafts, the unread cue) follows the agent, not its current session.
+struct ControlSeat: Codable, Equatable, Identifiable {
+    var id: String
     var agentId: String
     var title: String
+    /// The name shown in the rail; blank means Paseo's title.
+    var name: String = ""
+    var color: String = ""
     var host: String?
     var provider: String = AgentProviders.fallback
 
-    init(agentId: String, title: String, host: String? = nil, provider: String = AgentProviders.fallback) {
+    init(agentId: String, title: String, host: String? = nil, provider: String = AgentProviders.fallback,
+         id: String? = nil, name: String = "", color: String = "") {
+        self.id = id ?? agentId
         self.agentId = agentId
         self.title = title
+        self.name = name
+        self.color = color
         self.host = host
         self.provider = provider
     }
 
+    /// A seat added through `sift control set`: named so `control` still finds it among other seats.
+    static func control(agentId: String, title: String, name: String?, host: String?,
+                        provider: String = AgentProviders.fallback) -> ControlSeat {
+        let name = name ?? (title.localizedCaseInsensitiveContains("control") ? "" : "Control")
+        return ControlSeat(agentId: agentId, title: title, host: host, provider: provider, name: name)
+    }
+
+    var label: String { name.isEmpty ? title : name }
+    /// The Control seat is the one whose label says Control (Paseo titles them "Jon's Control (AWS)").
+    var isControl: Bool { label.localizedCaseInsensitiveContains("control") }
+    var palette: FacePalette { FacePalette.named(color.isEmpty ? FacePalette.pick(for: label) : color) }
+
     private enum CodingKeys: String, CodingKey {
-        case agentId, title, host, provider
+        case id, agentId, title, name, color, host, provider
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         agentId = try container.decode(String.self, forKey: .agentId)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? agentId
         title = try container.decode(String.self, forKey: .title)
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        color = try container.decodeIfPresent(String.self, forKey: .color) ?? ""
         host = try container.decodeIfPresent(String.self, forKey: .host)
         provider = try container.decodeIfPresent(String.self, forKey: .provider) ?? AgentProviders.fallback
     }

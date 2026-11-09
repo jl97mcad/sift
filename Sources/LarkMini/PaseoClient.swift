@@ -339,7 +339,7 @@ final class PaseoClient {
             resources.appendingPathComponent("app.asar.unpacked/dist/daemon/node-entrypoint-runner.js").path,
             "node-script", script.path,
             resources.appendingPathComponent("app.asar/node_modules/@getpaseo/cli/dist").path,
-            agentId, host ?? "", String(max(1, min(Store.controlMaxTail, tail)))] + (watch ? ["watch"] : []), script)
+            agentId, host ?? "", String(max(1, min(SeatSession.maxTail, tail)))] + (watch ? ["watch"] : []), script)
     }
 
     private static var helperEnvironment: [String: String] {

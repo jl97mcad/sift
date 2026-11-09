@@ -1,9 +1,9 @@
 # Sift
 
-A small floating Lark companion for macOS. A green head rests at the right
-edge of the screen; click it for a compact panel with your unread Lark chats,
-pinned chats and, optionally, a conversation with a coding-agent "Control"
-session running in [Paseo](https://paseo.sh).
+A small floating agent and Lark companion for macOS. A green head rests at
+the right edge of the screen; click it for a compact panel with your coding
+agents running in [Paseo](https://paseo.sh) (Control, Finance, whatever you
+seat), then your unread and pinned Lark chats.
 
 Sift is a standalone app on Lark's public Open API. It does not patch, read or
 automate the Lark desktop client.
@@ -24,14 +24,16 @@ automate the Lark desktop client.
   bundles and system events. Replies quote their parent; edits, recalls,
   threads and bots are marked. Messages from one sender in the same minute
   group together.
-- **Control seat (optional).** Talk to a Paseo agent session from the panel:
-  readable replies with Markdown, named speakers, a live activity row, the
-  work between replies (commands, edits, checklists, failures) folded into
-  one line that opens to each step, visible errors and notifications, and
-  names of Lark people and groups linked to their chats.
-- **Needs you.** The head pulses for an open ask from your Control's runner
-  or a Paseo request (permission, plan, question), until you have seen it.
-  Each request shows what it asks and opens in Paseo to answer.
+- **Agent seats (optional).** Any number of Paseo agent sessions, first in
+  the rail, each with its own face in its own colour and name. Talk to each
+  from the panel: readable replies with Markdown, named speakers, a live
+  activity row, the work between replies (commands, edits, checklists,
+  failures) folded into one line that opens to each step, visible errors and
+  notifications, and names of Lark people and groups linked to their chats.
+  An agent that hands off to a new session of itself stays on its seat.
+- **Needs you.** The head and that agent's face pulse for an open ask from
+  its runner or a Paseo request (permission, plan, question), until you have
+  seen it. Each request shows what it asks and opens in Paseo to answer.
 - **Notifications (opt-in).** Optional macOS banners and sound, never while
   the panel is focused.
 
@@ -93,24 +95,30 @@ ad hoc, not notarized. An agent can run the whole setup; see
    sift chats --limit 5
    ```
 
-### Control seat (optional)
+### Agent seats (optional)
 
 ```bash
-sift control set --agent-id <paseo-agent-id> --host tcp://<daemon-host>:<port>
-sift control status
+sift agents add --agent-id <paseo-agent-id> --host tcp://<daemon-host>:<port>
+sift agents add --agent-id <id> --host <host> --name "Finance" --color pink
+sift agents list
 ```
 
-Or use Settings → Control seat. Sift sends with `paseo send` and keeps one
-connection open through the installed Paseo app's own client: Paseo's events
-bring a fresh, bounded, typed timeline when something changes. Only
-prompts and replies show as messages; thoughts and tool steps show as labelled,
-collapsed work. When a handoff archives the
-seated session and exactly one live session on the same host carries its
-`seat` label, Sift follows it. Seats without a `seat` label never move.
+Or use Settings → Agents. Seats sit before the Inbox in the rail, in the
+order added (drag to reorder). Each gets a face: its own colour, picked from
+the name unless you choose one (blue, purple, pink, orange, yellow, teal,
+red). The seat named Control is what `sift control` addresses.
 
-Open asks come from the same daemon, through `control-plugins`' read-only
-`asks.open` call. Without that suite, asks are off; if the read fails, Sift
-says the state is unknown rather than showing none.
+Sift sends with `paseo send` and keeps one connection open per seat through
+the installed Paseo app's own client: Paseo's events bring a fresh, bounded,
+typed timeline when something changes. Only prompts and replies show as
+messages; thoughts and tool steps show as labelled, collapsed work. When a
+handoff archives a seated session and exactly one live session on the same
+host carries its `seat` label, that seat follows it; its name, colour, draft
+and seen requests stay. Seats without a `seat` label never move.
+
+Open asks come from each seat's daemon, through `control-plugins`' read-only
+`asks.open` call. Without that suite, asks are off for that seat; if the read
+fails, Sift says the state is unknown rather than showing none.
 
 ## CLI
 
@@ -125,16 +133,17 @@ Every command prints one JSON object and exits non-zero on failure.
 | `sift chats [--limit N]` | chat list |
 | `sift messages --chat-id ID [--limit N]` | one chat's history |
 | `sift pins list \| add <chat_id> \| add --name "Room" \| remove <chat_id> \| clear` | pinned chats |
-| `sift control set \| status \| send "text" \| logs [--tail N] \| digest \| asks \| off` | Control seat |
+| `sift agents list \| add --agent-id ID [--host H] [--name N] [--color C] \| set <id\|name> \| remove <id\|name>` | agent seats |
+| `sift control set \| status \| send "text" \| logs [--tail N] \| digest \| asks \| off` | the Control seat |
 | `sift selftest` / `sift open` / `sift logout` | geometry self-test; open the app; forget the session |
 
 ## Privacy and data
 
 - Everything stays on your Mac, in `~/Library/Application Support/Sift/`:
   `credentials.json` (app secret and tokens), `state.json` (pins, settings,
-  Control seat) and `cache.json` (chat list and previews), each mode 0600.
+  agent seats) and `cache.json` (chat list and previews), each mode 0600.
   Device-only preferences use macOS user defaults.
-- Sift talks only to Lark's Open API and, if you set a Control seat, to that
+- Sift talks only to Lark's Open API and, for each agent seat, to that
   Paseo daemon. There is no telemetry and no third-party service.
 - Notifications are off until you enable them.
 
@@ -155,12 +164,12 @@ Every command prints one JSON object and exits non-zero on failure.
 - Reads trail the native client by a few seconds. With the panel collapsed, a
   new message is found from the chat list's activity order, which Lark updates
   up to about 20 seconds after the message.
-- The Control read depends on the Paseo desktop app's internal layout (0.14).
+- The agent read depends on the Paseo desktop app's internal layout (0.14).
   A different version may fail visibly with "Paseo conversation data is
   unavailable"; Sift then falls back to reading every 15 seconds.
-- The live Control connection keeps one Paseo helper process running (about
-  190 MB of memory, close to no CPU at rest).
-- Control history shows the latest 80 timeline entries, up to 400 with
+- Each seat keeps one Paseo helper process running (about 190 MB of memory
+  each, close to no CPU at rest), so five seats cost about 1 GB.
+- Agent history shows the latest 80 timeline entries, up to 400 with
   "Earlier activity"; older history stays in Paseo. Paseo artifacts are not
   shown yet.
 - Stickers cannot be loaded (Lark does not serve them to apps); reactions need

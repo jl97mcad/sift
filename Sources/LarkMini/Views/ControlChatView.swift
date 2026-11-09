@@ -2,23 +2,24 @@ import SwiftUI
 
 struct ControlChatView: View {
     @EnvironmentObject var store: Store
+    @ObservedObject var seat: SeatSession
     @Environment(\.siftReduceMotion) private var reduceMotion
     @FocusState private var composing: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                ControlMark(size: 32, running: store.controlActivity != nil)
+                FaceIcon(size: 32, palette: seat.palette)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Control").font(.system(size: 20, weight: .semibold))
-                    Text(store.controlSeat?.title ?? "Paseo")
+                    Text(seat.label).font(.system(size: 20, weight: .semibold)).lineLimit(1)
+                    Text(seat.config.name.isEmpty ? "Paseo" : seat.config.title)
                         .font(.system(size: 11)).foregroundStyle(SiftStyle.secondary).lineLimit(1)
                 }
                 .panelDragHandle().help("Drag to move Sift")
                 Spacer(minLength: 0)
-                if store.openNeedCount > 0 {
+                if seat.openNeedCount > 0 {
                     Button { store.controlFocusAsks = true } label: {
-                        Label("\(store.openNeedCount) waiting", systemImage: "hand.raised")
+                        Label("\(seat.openNeedCount) waiting", systemImage: "hand.raised")
                             .font(.system(size: 11, weight: .semibold)).foregroundStyle(SiftStyle.green)
                             .padding(.horizontal, 8).padding(.vertical, 4)
                             .background(SiftStyle.green.opacity(0.12), in: Capsule())
@@ -27,21 +28,21 @@ struct ControlChatView: View {
                 }
                 IconButton(symbol: "arrow.clockwise", help: "Refresh conversation") {
                     store.errorText = nil
-                    Task { await store.refreshControl() }
-                }.disabled(store.controlBusy)
+                    Task { await seat.refresh() }
+                }.disabled(seat.busy)
             }
             .padding(.horizontal, 16).frame(height: 76)
             Rectangle().fill(SiftStyle.line).frame(height: 1)
             transcript
             // Outside the scroll view: an animating row inside lazy, bottom-anchored content
             // re-measured the whole transcript every frame and pegged the main thread.
-            if store.controlNeedsInput || store.controlActivity != nil || ["archived", "error"].contains(store.controlStatus) {
+            if seat.needsInput || seat.activity != nil || ["archived", "error"].contains(seat.status) {
                 liveState.frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.top, 8)
             }
             if let error = store.errorText { ErrorBar(text: error) }
             composer
         }
-        .task { await store.refreshControl() }
+        .task(id: seat.id) { await seat.refresh() }
         .environment(\.openURL, OpenURLAction { url in
             guard let id = ChatLinks.chatId(from: url) else { return .systemAction }
             store.openLinkedChat(id)
@@ -54,22 +55,22 @@ struct ControlChatView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     asks.id("asks")
-                    if store.controlHasOlder && !store.controlTimeline.isEmpty {
-                        if store.canLoadEarlierControl {
-                            Button(store.controlBusy ? "Loading…" : "Earlier activity") { Task { await store.loadEarlierControl() } }
+                    if seat.hasOlder && !seat.timeline.isEmpty {
+                        if seat.canLoadEarlier {
+                            Button(seat.busy ? "Loading…" : "Earlier activity") { Task { await seat.loadEarlier() } }
                                 .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(SiftStyle.secondary)
-                                .disabled(store.controlBusy).padding(.bottom, 16)
+                                .disabled(seat.busy).padding(.bottom, 16)
                         } else {
-                            Button("Older history is in Paseo") { store.openInPaseo() }
+                            Button("Older history is in Paseo") { seat.openInPaseo() }
                                 .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(SiftStyle.muted).padding(.bottom, 16)
                         }
                     }
-                    if store.controlTimeline.isEmpty {
-                        PaneEmptyState(symbol: "command", title: store.controlBusy ? "Loading conversation" : store.errorText != nil ? "Conversation unavailable" : "What are we working on?",
+                    if seat.timeline.isEmpty {
+                        PaneEmptyState(symbol: "command", title: seat.busy ? "Loading conversation" : store.errorText != nil ? "Conversation unavailable" : "What are we working on?",
                             detail: store.errorText != nil ? "Refresh to try again. Your draft stays here." : "Send a task or pick up where you left off with your agent.")
                     }
-                    ForEach(Array(store.controlTimeline.enumerated()), id: \.element.id) { index, entry in
-                        let previous = index > 0 ? store.controlTimeline[index - 1] : nil
+                    ForEach(Array(seat.timeline.enumerated()), id: \.element.id) { index, entry in
+                        let previous = index > 0 ? seat.timeline[index - 1] : nil
                         switch entry {
                         case .message(let message):
                             let grouped = message.groups(with: previous?.message)
@@ -87,13 +88,13 @@ struct ControlChatView: View {
             }
             .scrollIndicators(.never)
             .defaultScrollAnchor(.bottom)
-            .id(store.controlSeat?.agentId)
+            .id(seat.config.agentId)
             .onChange(of: store.controlFocusAsks, initial: true) {
                 guard store.controlFocusAsks else { return }
                 store.controlFocusAsks = false
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { proxy.scrollTo("asks", anchor: .top) }
             }
-            .onChange(of: store.controlTimeline.last?.id) { old, _ in
+            .onChange(of: seat.timeline.last?.id) { old, _ in
                 guard old != nil else { return }
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
@@ -101,10 +102,10 @@ struct ControlChatView: View {
     }
 
     @ViewBuilder private var asks: some View {
-        ForEach(store.controlPermissions, id: \.id) { request in
-            PermissionCard(request: request) { store.openInPaseo() }.padding(.bottom, 12)
+        ForEach(seat.permissions, id: \.id) { request in
+            PermissionCard(request: request) { seat.openInPaseo() }.padding(.bottom, 12)
         }
-        switch store.asks {
+        switch seat.asks {
         case .off: EmptyView()
         case .unavailable(let reason):
             Text("Asks unknown · \(reason)").font(.system(size: 11)).foregroundStyle(SiftStyle.muted).padding(.bottom, 16)
@@ -114,39 +115,39 @@ struct ControlChatView: View {
         }
     }
 
-    /// One line for what Control is doing now; idle sessions show nothing.
+    /// One line for what the agent is doing now; idle sessions show nothing.
     @ViewBuilder private var liveState: some View {
-        if store.controlNeedsInput {
+        if seat.needsInput {
             Button { store.controlFocusAsks = true } label: {
-                Label(store.controlPermissions.count > 1 ? "\(store.controlPermissions.count) requests wait for you · answer in Paseo"
+                Label(seat.permissions.count > 1 ? "\(seat.permissions.count) requests wait for you · answer in Paseo"
                       : "Waiting for you · answer in Paseo", systemImage: "hand.raised")
             }
             .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(SiftStyle.green).help("Show the request")
-        } else if let activity = store.controlActivity {
+        } else if let activity = seat.activity {
             HStack(spacing: 8) {
                 ActivityDots()
                 Text(activity).font(.system(size: 12)).foregroundStyle(SiftStyle.secondary)
             }
-            .accessibilityElement(children: .ignore).accessibilityLabel("Control: \(activity)")
-        } else if store.controlStatus == "archived" {
-            Text("This session is archived. Sift moves to the next Control once Paseo names one.")
+            .accessibilityElement(children: .ignore).accessibilityLabel("\(seat.label): \(activity)")
+        } else if seat.status == "archived" {
+            Text("This session is archived. Sift moves to its successor once Paseo names one.")
                 .font(.system(size: 12)).foregroundStyle(SiftStyle.secondary)
-        } else if store.controlStatus == "error" {
-            Text("Control stopped with an error.").font(.system(size: 12)).foregroundStyle(SiftStyle.secondary)
+        } else if seat.status == "error" {
+            Text("\(seat.label) stopped with an error.").font(.system(size: 12)).foregroundStyle(SiftStyle.secondary)
         }
     }
 
     private var composer: some View {
         VStack(spacing: 6) {
             HStack(alignment: .bottom, spacing: 8) {
-                TextField("Message Control…", text: $store.controlDraft, axis: .vertical)
+                TextField("Message \(seat.label)…", text: $seat.draft, axis: .vertical)
                     .textFieldStyle(.plain).font(.system(size: 13)).lineLimit(2...5)
                     .frame(minHeight: 44, alignment: .topLeading)
                     .focused($composing)
-                    .onSubmit { if canSend { Task { await store.sendControl() } } }
-                    .accessibilityLabel("Message Control")
-                Button { Task { await store.sendControl() } } label: {
-                    Image(systemName: store.controlSending ? "clock" : "arrow.up")
+                    .onSubmit { if canSend { Task { await seat.send() } } }
+                    .accessibilityLabel("Message \(seat.label)")
+                Button { Task { await seat.send() } } label: {
+                    Image(systemName: seat.sending ? "clock" : "arrow.up")
                         .font(.system(size: 13, weight: .semibold)).frame(width: 28, height: 28)
                         .foregroundStyle(canSend ? Color.black : SiftStyle.muted)
                         .background(canSend ? Color.white : Color.white.opacity(0.05), in: Circle())
@@ -154,14 +155,14 @@ struct ControlChatView: View {
                 }
                 .buttonStyle(.plain).disabled(!canSend)
                 .keyboardShortcut(.return, modifiers: .command)
-                .help("Send to Control (⌘Return)").accessibilityLabel("Send to Control")
+                .help("Send to \(seat.label) (⌘Return)").accessibilityLabel("Send to \(seat.label)")
             }
             .composerSurface().padding(.bottom, 12)
         }
     }
 
     private var canSend: Bool {
-        !store.controlDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !store.controlSending
+        !seat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !seat.sending
     }
 }
 
