@@ -93,8 +93,8 @@ export function stepLabel(item) {
   if (item.type === "reasoning") return "Thinking";
   if (item.type !== "tool_call") return null;
   // Background-task notices, messages from other agents and empty tool records say nothing useful.
-  if (["task_notification", "agent_message", "tool"].includes(item.name)) return null;
   const command = item.detail?.command ?? "";
+  if (["task_notification", "agent_message"].includes(item.name) || (item.name === "tool" && !command)) return null;
   const rules = [
     [/STATE\.md/, "Reading the god session's notes"],
     [/scratchpad/, "Reading Control's scratchpad"],

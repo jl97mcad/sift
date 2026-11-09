@@ -62,6 +62,7 @@ async function talk(request, response) {
       for (const piece of pieces(plain(text))) {
         if ((budget -= piece.length) < 0) return;
         lastSpoke = Date.now();
+        updates = 0; // real speech resets the progress spacing
         const clip = speakPiece(piece).catch((error) => (console.error(error), null));
         speech = speech.then(async () => {
           const data = await clip;
@@ -71,6 +72,7 @@ async function talk(request, response) {
     };
     let steps = [];
     let stepSince = Date.now();
+    let toolCalls = 0;
     let text = "";
     let spoken = 0;
     // ponytail: polls the local daemon every 0.6 s during a turn; a timeline subscription would
@@ -87,7 +89,9 @@ async function talk(request, response) {
         const after = page.entries.slice(start).map((entry) => entry.item);
         const labels = after.map(stepLabel).filter(Boolean).filter((label, i, all) => label !== all[i - 1]);
         for (const label of labels.slice(steps.length)) emit({ type: "step", label });
-        if (labels.length !== steps.length) stepSince = Date.now();
+        const raw = after.filter((item) => item.type === "tool_call").length;
+        if (raw !== toolCalls) stepSince = Date.now(); // any new tool call, even one with the same label
+        toolCalls = raw;
         steps = labels;
         const reply = after.filter((item) => item.type === "assistant_message" && item.text).map((item) => item.text).join("\n\n");
         if (reply !== text) emit({ type: "text", text: (text = reply) });
