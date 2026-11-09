@@ -9,7 +9,7 @@ const API = "https://openrouter.ai/api/v1";
 const MAX_SPOKEN = 2000;
 
 export async function key() {
-  const value = (await readFile(join(SUPPORT, "openrouter-key"), "utf8")).trim();
+  const value = (await readFile(join(SUPPORT, "openrouter-key"), "utf8").catch(() => "")).trim();
   if (!value) throw new Error("No OpenRouter key: run `sift voice key -` on the Mac.");
   return value;
 }

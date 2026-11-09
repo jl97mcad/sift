@@ -30,7 +30,7 @@
 <script>
 const button = document.getElementById("talk"), status = document.getElementById("status");
 const log = document.getElementById("log"), voice = document.getElementById("voice");
-let recorder, chunks = [], stream, meter, stopQueue = false, state = "idle", turn = 0;
+let recorder, chunks = [], stream, meter, meterContext, stopQueue = false, state = "idle", turn = 0;
 
 function set(next, label, text) { state = next; button.className = next; button.textContent = label; status.textContent = text; }
 function say(cls, text) { const p = document.createElement("p"); p.className = cls; p.textContent = text; log.prepend(p); }
@@ -56,7 +56,7 @@ async function start(context) {
     const peak = Math.max(...data.map((v) => Math.abs(v - 128))) / 128;
     button.style.setProperty("--level", Math.min(1, peak * 2.5).toFixed(2));
   }, 60);
-  meter.context = context;
+  meterContext = context;
   set("listening", "Tap to send", "Listening…");
 }
 
@@ -64,7 +64,7 @@ async function finish() {
   set("waiting", "Thinking…", "Okay, let me look."); // at once, so a second tap can't stop twice
   const mine = ++turn;
   const settle = (label, text) => { if (turn === mine) set("idle", label, text); };
-  clearInterval(meter); meter.context.close(); button.style.setProperty("--level", 0);
+  clearInterval(meter); meterContext?.close(); button.style.setProperty("--level", 0);
   const stopped = new Promise((done) => (recorder.onstop = done));
   recorder.stop();
   // The acknowledgement plays inside the tap, which also unlocks audio for the reply on iPhone.
