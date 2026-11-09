@@ -13,12 +13,17 @@ export async function key() {
 }
 
 /** Phrases Whisper invents from silence or noise (often in another language); never sent as speech. */
-export function isPhantom(text) {
+export function isPhantom(text, language = "en") {
   const t = text.trim().toLowerCase().replace(/[.!?,…\s]+$/u, "");
   if (!t) return true;
-  if (/[^\u0000-\u024f\u2000-\u206f]/u.test(t)) return true; // not Latin script: a hallucination here
-  if (/^(you|thank you|thanks|bye|okay|ok|um|uh|hmm)([.!,\s]+(you|thank you|thanks|bye|okay|ok))*$/.test(t)) return true;
-  return /(thanks for watching|subtitles by|to be continued|like and subscribe|amara\.org)/.test(t);
+  // Whisper "hears" another script in English-only noise; only check when the language is English.
+  if (language === "en" && /[^\u0000-\u024f\u2000-\u206f\u2018-\u201f]/u.test(t)) return true;
+  if (/(thanks for watching|subtitles by|to be continued|like and subscribe|amara\.org)/.test(t)) return true;
+  // Strings of filler words. A single real "Bye." or "Okay." gets through; "you" alone or a run of three doesn't.
+  const words = t.split(/[^a-z']+/).filter(Boolean);
+  const filler = new Set(["you", "thank", "thanks", "bye", "okay", "ok", "um", "uh", "hmm"]);
+  if (words.length && words.every((w) => filler.has(w))) return words.join(" ") === "you" || words.join(" ") === "thank you" || words.length >= 3;
+  return false;
 }
 
 export async function transcribe(audio, type, language = "en") {

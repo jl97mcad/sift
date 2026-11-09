@@ -175,7 +175,7 @@ async function playQueue() {
   if (on && phase === "speaking") listen();
 }
 function speak(b64) { queue.push(clipBytes(b64)); playQueue(); }
-function hush() { generation += 1; queue = []; try { current?.stop(); } catch {} current = null; playing = false; }
+function hush() { endAfterSpeech = false; generation += 1; queue = []; try { current?.stop(); } catch {} current = null; playing = false; }
 
 // ---- Listening: the microphone stays open for the conversation; loudness decides the turns.
 async function begin() {

@@ -14,4 +14,6 @@ assert.ok(isPhantom("Bye. Bye. Okay. you"));
 assert.ok(isPhantom(" Thank you."));
 assert.ok(!isPhantom("Okay, check on the Mattel plan."));
 assert.ok(!isPhantom("Bye for now, but first queue the plan."));
+assert.ok(!isPhantom("Bye."));
+assert.ok(!isPhantom("Привет", "ru"));
 console.log("ok");

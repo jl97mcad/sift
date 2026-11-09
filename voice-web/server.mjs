@@ -125,7 +125,7 @@ async function turn(request, response) {
   const emit = (event) => open && response.write(JSON.stringify(event) + "\n");
   try {
     const heard = await transcribe(audio, request.headers["content-type"] ?? "audio/webm", config.language ?? "en");
-    if (isPhantom(heard)) return emit({ type: "heard", text: "" });
+    if (isPhantom(heard, config.language ?? "en")) return emit({ type: "heard", text: "" });
     emit({ type: "heard", text: heard });
     await serial(async () => {
       let text = "";
