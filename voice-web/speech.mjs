@@ -12,10 +12,20 @@ export async function key() {
   return value;
 }
 
-export async function transcribe(audio, type) {
+/** Phrases Whisper invents from silence or noise (often in another language); never sent as speech. */
+export function isPhantom(text) {
+  const t = text.trim().toLowerCase().replace(/[.!?,…\s]+$/u, "");
+  if (!t) return true;
+  if (/[^\u0000-\u024f\u2000-\u206f]/u.test(t)) return true; // not Latin script: a hallucination here
+  if (/^(you|thank you|thanks|bye|okay|ok|um|uh|hmm)([.!,\s]+(you|thank you|thanks|bye|okay|ok))*$/.test(t)) return true;
+  return /(thanks for watching|subtitles by|to be continued|like and subscribe|amara\.org)/.test(t);
+}
+
+export async function transcribe(audio, type, language = "en") {
   const extension = type.includes("mp4") || type.includes("m4a") ? "m4a" : type.includes("ogg") ? "ogg" : type.includes("wav") ? "wav" : "webm";
   const form = new FormData();
   form.append("model", "openai/whisper-large-v3-turbo");
+  form.append("language", language); // a fixed language stops it inventing foreign "speech" from noise
   form.append("file", new Blob([audio], { type }), `speech.${extension}`);
   const response = await fetch(`${API}/audio/transcriptions`, {
     method: "POST", headers: { Authorization: `Bearer ${await key()}` }, body: form, signal: AbortSignal.timeout(30_000),

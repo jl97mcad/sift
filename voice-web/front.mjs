@@ -16,6 +16,14 @@ const tools = [
   {
     type: "function",
     function: {
+      name: "end_conversation",
+      description: "Stop listening. Call it when the person says goodbye, good night, that's all, or otherwise ends the chat, after a few words of goodbye.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "job_status",
       description: "What the worker is doing now and what it has finished, with its replies.",
       parameters: { type: "object", properties: {} },
@@ -34,6 +42,7 @@ You talk; the worker (${config.worker.name}) does the work. Rules:
 - When he asks how something is going, call job_status and tell him in a sentence, including what step it's on.
 - General questions and quick follow-ups about what was said: answer yourself.
 - If he says "yep", "ok" or "thanks", reply in a few words or just acknowledge.
+- When he says goodbye or that's all, say a short goodbye and call end_conversation.
 - Never send anything outside the company yourself; the worker only proposes such sends, and he approves them.`;
 }
 
@@ -55,7 +64,7 @@ export async function respond(config, history, userText, handlers, onText) {
       history.push({ role: "tool", tool_call_id: call.id, content: String(result) });
     }
     // It already spoke alongside a hand-off, so don't make it talk twice; a status check must be spoken.
-    if (text && calls.every((call) => call.function.name === "delegate")) break;
+    if (text && calls.every((call) => call.function.name !== "job_status")) break;
   }
   history.splice(0, Math.max(0, history.length - HISTORY));
   while (history[0] && history[0].role !== "user") history.shift(); // never start mid-exchange
