@@ -179,7 +179,10 @@ final class VoiceMode: ObservableObject {
     nonisolated static let silentPeak: Float = -35
     /// Whisper's usual inventions for near-silence.
     nonisolated private static let phantom: Set<String> = ["you", "thank you", "thanks for watching"]
-    weak var store: Store?
+    weak var store: Store? {
+        didSet { Task { await Acknowledgements.shared.prepare() } }
+    }
+    private var ackPlayer: AVAudioPlayer?
     private var recorder: AVAudioRecorder?
     private var recording: URL { FileManager.default.temporaryDirectory.appendingPathComponent("sift-voice.m4a") }
     private var pressedAt: Date?
@@ -336,6 +339,7 @@ final class VoiceMode: ObservableObject {
             return
         }
         phase = .transcribing
+        acknowledge()
         Task {
             do {
                 let text = try await SpeechAPI(key: key).transcribe(audio, filename: "speech.m4a")
@@ -492,7 +496,18 @@ final class VoiceMode: ObservableObject {
     /// Plays one clip. Each clip resumes once: when it ends, fails, is stopped, or a little after
     /// its remaining length if the player never reports back (an output device change). A paused
     /// clip waits.
+    /// A short "Okay, let me look" the moment you stop, so you know you were heard.
+    private func acknowledge() {
+        guard let clip = Acknowledgements.shared.next(), let player = try? AVAudioPlayer(data: clip) else { return }
+        ackPlayer = player
+        player.play()
+    }
+
     private func play(_ audio: Data) async {
+        // The answer waits for the acknowledgement to finish.
+        while let ack = ackPlayer, ack.isPlaying, !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
         guard let player = try? AVAudioPlayer(data: audio) else { return }
         let delegate = PlayerDelegate()
         player.delegate = delegate
@@ -521,6 +536,8 @@ final class VoiceMode: ObservableObject {
     }
 
     func stopSpeaking() {
+        ackPlayer?.stop()
+        ackPlayer = nil
         lines = []
         speaker?.cancel()
         speaker = nil
@@ -559,5 +576,50 @@ private final class PlayerDelegate: NSObject, AVAudioPlayerDelegate {
     private func done() {
         let finished = finished
         DispatchQueue.main.async { finished?() }
+    }
+}
+
+/// Short spoken acknowledgements, made once with the speech model and kept on disk, so one plays
+/// within a moment of you stopping without waiting on the network.
+@MainActor
+final class Acknowledgements {
+    static let shared = Acknowledgements()
+    nonisolated static let phrases = [
+        "Okay, let me look that up.", "Sure, one moment.", "Got it, checking now.",
+        "Okay, give me a second.", "Right, let me see.", "Yeah okay, on it.",
+    ]
+    private var clips: [Data] = []
+    private var preparing = false
+    private var last = -1
+
+    private var folder: URL { AppPaths.supportDirectory.appendingPathComponent("acknowledgements", isDirectory: true) }
+
+    func prepare() async {
+        guard clips.isEmpty, !preparing, let key = SpeechAPI.storedKey() else { return }
+        preparing = true
+        defer { preparing = false }
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let api = SpeechAPI(key: key)
+        var ready: [Data] = []
+        for phrase in Self.phrases {
+            // The name carries the model and voice, so changing either makes new clips.
+            let name = "\(SpeechAPI.speechModel)-\(SpeechAPI.voice)-\(phrase)"
+                .replacingOccurrences(of: #"[^A-Za-z0-9]+"#, with: "-", options: .regularExpression)
+            let file = folder.appendingPathComponent(name + ".mp3")
+            if let data = try? Data(contentsOf: file) { ready.append(data); continue }
+            guard let data = try? await api.speak(phrase) else { continue }
+            try? data.write(to: file, options: .atomic)
+            ready.append(data)
+        }
+        clips = ready
+    }
+
+    /// A different clip from last time; nil until they are ready, and it tries to get them ready.
+    func next() -> Data? {
+        guard !clips.isEmpty else { Task { await prepare() }; return nil }
+        var index = Int.random(in: 0..<clips.count)
+        if clips.count > 1, index == last { index = (index + 1) % clips.count }
+        last = index
+        return clips[index]
     }
 }
