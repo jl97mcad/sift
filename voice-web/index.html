@@ -97,7 +97,7 @@ button.addEventListener("click", () => {
     // Made inside the tap so iPhone lets the level meter run.
     const context = new AudioContext();
     context.resume();
-    start(context).catch((e) => { context.close(); set("idle", "Tap to talk", "Microphone unavailable: " + e.message); });
+    start(context).catch((e) => { context.close(); stream?.getTracks().forEach((t) => t.stop()); stream = null; set("idle", "Tap to talk", "Microphone unavailable: " + e.message); });
   }
   else if (state === "listening") finish();
   else if (state === "speaking") { stopQueue = true; turn++; voice.pause(); set("idle", "Tap to talk", "Stopped."); }

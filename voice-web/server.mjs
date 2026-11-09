@@ -54,8 +54,8 @@ createServer(async (request, response) => {
         if (!heard || /^(you|thank you)[.!]?$/i.test(heard)) return send(response, 200, { heard: "", reply: "", clips: [] });
         const agent = paseo.agents.ref((await voiceAgent()).id);
         await agent.run(heard, { timeoutMs: 5 * 60_000 });
-        const page = await agent.timeline.refetch({ direction: "tail", limit: 80, projection: "projected" });
-        const reply = latestReply(page.entries);
+        const page = await agent.timeline.refetch({ direction: "tail", limit: 300, projection: "projected" });
+        const reply = latestReply(page.entries, heard);
         // If speech fails, the words still reach the phone.
         const clips = reply ? await speakText(reply).catch((error) => (console.error(error), [])) : [];
         return send(response, 200, { heard, reply, clips });

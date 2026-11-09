@@ -69,10 +69,12 @@ export function pieces(text, limit = 280) {
   return out;
 }
 
-/** The assistant's words since the last prompt. */
-export function latestReply(entries) {
+/** The assistant's words since this prompt; empty if the prompt is not in the page. */
+export function latestReply(entries, prompt) {
   let start = -1;
-  entries.forEach((entry, index) => { if (entry.item.type === "user_message") start = index + 1; });
+  entries.forEach((entry, index) => {
+    if (entry.item.type === "user_message" && (entry.item.text ?? "").includes(prompt)) start = index + 1;
+  });
   if (start < 0) return ""; // the prompt fell out of the page: never read an older reply
   return entries.slice(start).filter((e) => e.item.type === "assistant_message" && e.item.text).map((e) => e.item.text).join("\n\n");
 }
