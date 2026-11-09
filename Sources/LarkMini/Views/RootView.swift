@@ -55,6 +55,7 @@ struct CollapsedBubble: View {
                 .background {
                     if store.needsYouUnseen { AttentionPulse(size: 44) }
                 }
+                .background { VoiceHalo(voice: store.voice) }
                 .background(
                     Circle()
                         .fill(
