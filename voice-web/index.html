@@ -254,7 +254,11 @@ function tick() {
   if (phase === "thinking") return; // while it works out a reply, only a tap interrupts: a cough must not lose it
   if (phase === "speaking") {
     spokeUntil = now; graceUsed = false;
-    if (now - clipStartedAt < CLIP_ONSET) { echo = echo * 0.8 + rms * 0.2; return; } // learn this clip's echo first; never a barge-in
+    if (now - clipStartedAt < CLIP_ONSET) { // learn this clip's echo first (capped); never a barge-in
+      speechStart = 0;
+      echo = Math.min(0.1, echo * 0.8 + rms * 0.2);
+      return;
+    }
     const bar = Math.max(BARGE, echo * ECHO_RATIO);
     if (rms > bar) {
       speechStart ||= now;
