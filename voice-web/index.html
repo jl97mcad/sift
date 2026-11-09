@@ -116,7 +116,7 @@
 <audio id="voice" playsinline></audio>
 <script>
 const $ = (id) => document.getElementById(id);
-const button = $("talk"), hint = $("hint"), chip = $("chip"), thread = $("thread"), voice = $("voice");
+const empty = $("empty"), button = $("talk"), hint = $("hint"), chip = $("chip"), thread = $("thread"), voice = $("voice");
 let controller, recorder, chunks = [], stream, meter, meterContext, state = "idle", turn = 0, queue = [], playing = false, stopped = false;
 
 const labels = { idle: ["Ready", "Tap to talk"], starting: ["Ready", "Opening the microphone…"],
@@ -132,7 +132,7 @@ function el(tag, cls, text) { const node = document.createElement(tag); node.cla
 function scroll() { thread.scrollTo({ top: thread.scrollHeight, behavior: "smooth" }); }
 
 function newTurn() {
-  $("empty")?.remove();
+  empty.remove();
   const box = el("section", "turn");
   const you = el("p", "you", "…"), steps = el("ol", "steps"), reply = el("p", "reply");
   box.append(you, steps, reply);
@@ -198,12 +198,14 @@ async function finish() {
   stream.getTracks().forEach((track) => track.stop());
   stream = null;
   audioMode("playback"); // after the mic is off, so replies use the speaker
+  if (turn !== mine) return; // stopped while the recording closed
   const view = newTurn();
   const settle = (text) => { if (turn === mine) set("idle", text); };
   try {
     const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
     controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 330_000);
+    const own = controller; // a late timer can only abort its own turn
+    const timer = setTimeout(() => own.abort(), 330_000);
     const response = await fetch("/api/talk", { method: "POST", headers: { "Content-Type": blob.type }, body: blob, signal: controller.signal });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Something went wrong.");
     const reader = response.body.getReader(), decoder = new TextDecoder();
@@ -217,7 +219,12 @@ async function finish() {
         const event = JSON.parse(buffer.slice(0, line));
         buffer = buffer.slice(line + 1);
         if (event.type === "heard") {
-          if (!event.text) { view.box.remove(); settle("Didn't catch anything. Nothing was sent."); return; }
+          if (!event.text) {
+            view.box.remove();
+            if (!thread.querySelector(".turn")) thread.append(empty);
+            settle("Didn't catch anything. Nothing was sent.");
+            return;
+          }
           view.you.textContent = event.text;
         } else if (event.type === "step") {
           view.steps.querySelectorAll(".step:not(.done)").forEach((s) => s.classList.add("done"));
