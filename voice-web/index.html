@@ -4,45 +4,168 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="theme-color" content="#141414">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0b0c0e">
 <title>Sift</title>
 <style>
-  :root { color-scheme: dark; --green: #b5dc9e; --text: #ececec; --muted: #9a9a9a; }
+  :root {
+    color-scheme: dark;
+    --bg: #0b0c0e; --panel: #15171a; --line: rgba(255,255,255,.07);
+    --text: #eceef0; --muted: #8b9096; --green: #a8e0a0; --mint: #6fd6c4; --violet: #9b8cff;
+    --level: 0;
+  }
   * { box-sizing: border-box; }
-  body { margin: 0; min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center;
-         gap: 28px; padding: 24px; background: #141414; color: var(--text); font: 16px/1.45 -apple-system, system-ui, sans-serif; }
-  button { width: 168px; height: 168px; border-radius: 50%; border: 0; background: #262626; color: var(--text);
-           font: 600 17px -apple-system, system-ui, sans-serif; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
-           box-shadow: 0 0 0 calc(var(--level, 0) * 26px) rgba(181, 220, 158, .28); transition: box-shadow .08s, background .15s; }
-  button:focus-visible { outline: 3px solid var(--green); outline-offset: 6px; }
-  button.listening { background: var(--green); color: #141414; }
-  button.waiting { background: #303030; }
-  #status { color: var(--muted); min-height: 1.45em; text-align: center; }
-  #log { width: min(100%, 520px); display: flex; flex-direction: column; gap: 10px; }
-  #log p { margin: 0; } #log .you { color: var(--muted); }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.5 -apple-system, "SF Pro Text", system-ui, sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  body::before { /* soft light that follows the state */
+    content: ""; position: fixed; inset: auto -20% -30% -20%; height: 70%; pointer-events: none;
+    background: radial-gradient(closest-side, color-mix(in srgb, var(--glow, var(--violet)) 22%, transparent), transparent);
+    filter: blur(40px); opacity: .7; transition: background .6s;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: calc(env(safe-area-inset-top) + 14px) 20px 10px;
+  }
+  header h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
+  #chip {
+    font-size: 12px; color: var(--muted); padding: 4px 10px; border-radius: 999px;
+    background: var(--panel); border: 1px solid var(--line); display: flex; gap: 6px; align-items: center;
+  }
+  #chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--glow, var(--muted)); }
+
+  #thread {
+    flex: 1; overflow-y: auto; padding: 8px 20px 24px; display: flex; flex-direction: column; gap: 22px;
+    -webkit-mask-image: linear-gradient(transparent, #000 24px, #000 calc(100% - 24px), transparent);
+  }
+  #empty { margin: auto 0; text-align: center; color: var(--muted); }
+  #empty strong { display: block; color: var(--text); font-size: 22px; font-weight: 600; letter-spacing: -.02em; margin-bottom: 6px; }
+  .turn { display: flex; flex-direction: column; gap: 12px; animation: rise .35s ease-out both; }
+  .you {
+    align-self: flex-end; max-width: 85%; margin: 0; padding: 10px 14px; border-radius: 18px 18px 6px 18px;
+    background: #23262b; color: var(--text);
+  }
+  .steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .step { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; animation: rise .25s ease-out both; }
+  .step::before {
+    content: ""; width: 14px; height: 14px; flex: none; border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--mint) 35%, transparent); border-top-color: var(--mint);
+    animation: spin .8s linear infinite;
+  }
+  .step.done::before {
+    content: "✓"; animation: none; border: 0; color: var(--mint); font-size: 12px; font-weight: 700;
+    display: grid; place-items: center;
+  }
+  .reply { margin: 0; white-space: pre-wrap; font-size: 17px; line-height: 1.55; letter-spacing: -.005em; }
+  .reply:empty { display: none; }
+  .note { color: var(--muted); font-size: 14px; margin: 0; }
+
+  footer {
+    position: relative; display: flex; flex-direction: column; align-items: center; gap: 10px;
+    padding: 14px 20px calc(env(safe-area-inset-bottom) + 18px);
+  }
+  #talk { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+    position: relative; width: 84px; height: 84px; border: 0; border-radius: 50%; padding: 0; cursor: pointer;
+    background: transparent; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+  }
+  #talk:focus-visible { outline: 3px solid var(--green); outline-offset: 6px; }
+  .orb, .halo { position: absolute; inset: 0; border-radius: 50%; }
+  .orb {
+    background:
+      radial-gradient(circle at 35% 30%, rgba(255,255,255,.55), transparent 42%),
+      conic-gradient(from var(--turn, 0deg), var(--violet), var(--mint), var(--green), var(--violet));
+    box-shadow: 0 10px 40px -8px color-mix(in srgb, var(--glow, var(--violet)) 70%, transparent);
+    animation: turn 9s linear infinite, breathe 4s ease-in-out infinite;
+    transform: scale(calc(1 + var(--level) * .22)); transition: transform .08s ease-out;
+  }
+  .halo { border: 2px solid color-mix(in srgb, var(--glow, var(--violet)) 60%, transparent); opacity: 0; }
+  #hint { font-size: 13px; color: var(--muted); min-height: 1.5em; text-align: center; }
+
+  body.listening { --glow: var(--green); }
+  body.listening .orb { animation: turn 3s linear infinite; }
+  body.listening .halo { animation: ripple 1.6s ease-out infinite; }
+  body.waiting { --glow: var(--mint); }
+  body.waiting .orb { animation: turn 1.4s linear infinite, breathe 1.4s ease-in-out infinite; }
+  body.speaking { --glow: var(--violet); }
+  body.speaking .orb { animation: turn 4s linear infinite, talkpulse .5s ease-in-out infinite alternate; }
+
+  @property --turn { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
+  @keyframes turn { to { --turn: 360deg; } }
+  @keyframes breathe { 50% { filter: brightness(1.12) saturate(1.15); } }
+  @keyframes talkpulse { to { transform: scale(1.07); } }
+  @keyframes ripple { from { opacity: .7; transform: scale(1); } to { opacity: 0; transform: scale(1.6); } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before { animation: none !important; transition: none !important; }
+  }
 </style>
 </head>
 <body>
-<button id="talk" aria-live="polite">Tap to talk</button>
-<div id="status" role="status">Tap, talk, tap again to send.</div>
-<div id="log"></div>
+<header><h1>Sift</h1><span id="chip">Ready</span></header>
+<main id="thread" aria-live="polite">
+  <div id="empty"><strong>Ask me anything</strong>Tap the orb and talk, then tap again.<br>Or hold it while you talk.</div>
+</main>
+<footer>
+  <button id="talk" aria-label="Tap to talk"><span class="halo"></span><span class="orb"></span></button>
+  <div id="hint" role="status">Tap to talk</div>
+</footer>
 <audio id="voice" playsinline></audio>
 <script>
-const button = document.getElementById("talk"), status = document.getElementById("status");
-const log = document.getElementById("log"), voice = document.getElementById("voice");
-let recorder, chunks = [], stream, meter, meterContext, stopQueue = false, state = "idle", turn = 0;
+const $ = (id) => document.getElementById(id);
+const empty = $("empty"), button = $("talk"), hint = $("hint"), chip = $("chip"), thread = $("thread"), voice = $("voice");
+let controller, recorder, chunks = [], stream, meter, meterContext, state = "idle", turn = 0, queue = [], playing = false, stopped = false;
 
-function set(next, label, text) { state = next; button.className = next; button.textContent = label; status.textContent = text; }
-function say(cls, text) { const p = document.createElement("p"); p.className = cls; p.textContent = text; log.prepend(p); }
+const labels = { idle: ["Ready", "Tap to talk"], starting: ["Ready", "Opening the microphone…"],
+  listening: ["Listening", "Tap or let go to send"], waiting: ["Working", "Tap to stop"], speaking: ["Speaking", "Tap to stop"] };
+function set(next, hintText) {
+  state = next;
+  document.body.className = next;
+  chip.textContent = labels[next][0];
+  hint.textContent = hintText ?? labels[next][1];
+  button.setAttribute("aria-label", labels[next][1]);
+}
+function el(tag, cls, text) { const node = document.createElement(tag); node.className = cls; if (text) node.textContent = text; return node; }
+function scroll() { thread.scrollTo({ top: thread.scrollHeight, behavior: "smooth" }); }
 
-async function play(url) {
-  voice.src = url;
-  const ended = new Promise((done) => { voice.onended = done; voice.onerror = done; voice.onpause = done; });
-  try { await voice.play(); } catch { return; } // nothing to play, or blocked: move on
-  await ended;
+function newTurn() {
+  empty.remove();
+  const box = el("section", "turn");
+  const you = el("p", "you", "…"), steps = el("ol", "steps"), reply = el("p", "reply");
+  box.append(you, steps, reply);
+  thread.append(box);
+  scroll();
+  return { box, you, steps, reply };
+}
+
+async function playQueue(mine) {
+  if (playing) return;
+  playing = true;
+  while (queue.length && !stopped && turn === mine) {
+    const url = queue.shift();
+    voice.src = url;
+    const ended = new Promise((done) => { voice.onended = done; voice.onerror = done; voice.onpause = done; });
+    try { await voice.play(); if (state === "waiting") set("speaking"); await ended; } catch {}
+    if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+  }
+  playing = false;
+}
+function enqueue(url, mine) { queue.push(url); playQueue(mine); }
+
+// iPhone: record in a call-style session, then switch back so replies play out loud through
+// the speaker, even with the silent switch on.
+function audioMode(type) { try { if (navigator.audioSession) navigator.audioSession.type = type; } catch {} }
+
+function clipUrl(base64) {
+  const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+  return URL.createObjectURL(new Blob([bytes], { type: "audio/mpeg" }));
 }
 
 async function start(context) {
+  audioMode("play-and-record");
   stream = stream ?? await navigator.mediaDevices.getUserMedia({ audio: true });
   const type = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"].find((t) => MediaRecorder.isTypeSupported(t)) ?? "";
   recorder = new MediaRecorder(stream, type ? { mimeType: type } : {});
@@ -51,57 +174,120 @@ async function start(context) {
   recorder.start();
   const analyser = context.createAnalyser(), data = new Uint8Array(256);
   context.createMediaStreamSource(stream).connect(analyser);
+  meterContext = context;
   meter = setInterval(() => {
     analyser.getByteTimeDomainData(data);
-    const peak = Math.max(...data.map((v) => Math.abs(v - 128))) / 128;
-    button.style.setProperty("--level", Math.min(1, peak * 2.5).toFixed(2));
-  }, 60);
-  meterContext = context;
-  set("listening", "Tap to send", "Listening…");
+    let peak = 0; for (const v of data) peak = Math.max(peak, Math.abs(v - 128));
+    document.documentElement.style.setProperty("--level", Math.min(1, peak / 128 * 2.5).toFixed(2));
+  }, 50);
+  listeningAt = Date.now();
+  set("listening");
 }
 
 async function finish() {
-  set("waiting", "Thinking…", "Okay, let me look."); // at once, so a second tap can't stop twice
+  set("waiting", "Okay, let me look…");
   const mine = ++turn;
-  const settle = (label, text) => { if (turn === mine) set("idle", label, text); };
-  clearInterval(meter); meterContext?.close(); button.style.setProperty("--level", 0);
-  const stopped = new Promise((done) => (recorder.onstop = done));
+  stopped = false; queue = [];
+  clearInterval(meter); meterContext?.close();
+  document.documentElement.style.setProperty("--level", 0);
+  const done = new Promise((resolve) => (recorder.onstop = resolve));
   recorder.stop();
   // The acknowledgement plays inside the tap, which also unlocks audio for the reply on iPhone.
-  voice.src = "/api/ack"; voice.play().catch(() => {});
-  await stopped;
-  stream.getTracks().forEach((track) => track.stop()); // the microphone is off between turns
+  enqueue("/api/ack", mine);
+  await done;
+  stream.getTracks().forEach((track) => track.stop());
   stream = null;
-  const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+  audioMode("playback"); // after the mic is off, so replies use the speaker
+  if (turn !== mine) return; // stopped while the recording closed
+  const view = newTurn();
+  const settle = (text) => { if (turn === mine) set("idle", text); };
   try {
-    const response = await fetch("/api/talk", { method: "POST", headers: { "Content-Type": blob.type }, body: blob, signal: AbortSignal.timeout(330_000) });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "Something went wrong.");
-    if (!result.heard) { settle("Tap to talk", "Didn't catch anything; nothing was sent."); return; }
-    say("you", result.heard);
-    if (result.reply) say("sift", result.reply);
-    if (turn !== mine) return;
-    set("speaking", "Tap to stop", "Speaking…");
-    stopQueue = false;
-    while (!voice.paused) await new Promise((r) => setTimeout(r, 100)); // let the acknowledgement finish
-    for (const clip of result.clips) { if (stopQueue || turn !== mine) break; await play("data:audio/mpeg;base64," + clip); }
-    settle("Tap to talk", "Tap, talk, tap again to send.");
+    const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+    controller = new AbortController();
+    const own = controller; // a late timer can only abort its own turn
+    const timer = setTimeout(() => own.abort(), 330_000);
+    const response = await fetch("/api/talk", { method: "POST", headers: { "Content-Type": blob.type }, body: blob, signal: controller.signal });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Something went wrong.");
+    const reader = response.body.getReader(), decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { value, done: ended } = await reader.read();
+      if (ended || turn !== mine) break;
+      buffer += decoder.decode(value, { stream: true });
+      let line;
+      while ((line = buffer.indexOf("\n")) >= 0) {
+        const event = JSON.parse(buffer.slice(0, line));
+        buffer = buffer.slice(line + 1);
+        if (event.type === "heard") {
+          if (!event.text) {
+            view.box.remove();
+            if (!thread.querySelector(".turn")) thread.append(empty);
+            settle("Didn't catch anything. Nothing was sent.");
+            return;
+          }
+          view.you.textContent = event.text;
+        } else if (event.type === "step") {
+          view.steps.querySelectorAll(".step:not(.done)").forEach((s) => s.classList.add("done"));
+          view.steps.append(el("li", "step", event.label));
+        } else if (event.type === "text") {
+          view.steps.querySelectorAll(".step").forEach((s) => s.classList.add("done"));
+          view.reply.textContent = event.text.replace(/\*\*|__|`/g, "");
+        } else if (event.type === "audio") {
+          enqueue(clipUrl(event.data), mine);
+        } else if (event.type === "error") {
+          view.box.append(el("p", "note", event.message));
+        }
+        scroll();
+      }
+    }
+    clearTimeout(timer); // only once the whole streamed answer has arrived
+    view.steps.querySelectorAll(".step").forEach((s) => s.classList.add("done"));
+    while ((playing || queue.length) && turn === mine && !stopped) await new Promise((r) => setTimeout(r, 120));
+    settle();
   } catch (error) {
-    settle("Tap to talk", error.message);
+    if (turn === mine) view.box.append(el("p", "note", error.message));
+    settle();
   }
 }
 
-button.addEventListener("click", () => {
+let pressedAt = 0, listeningAt = 0;
+function press() {
   if (state === "idle") {
-    state = "starting"; // a second tap while the microphone opens does nothing
+    pressedAt = Date.now();
+    set("starting");
+    navigator.vibrate?.(10);
     // Made inside the tap so iPhone lets the level meter run.
     const context = new AudioContext();
     context.resume();
-    start(context).catch((e) => { context.close(); stream?.getTracks().forEach((t) => t.stop()); stream = null; set("idle", "Tap to talk", "Microphone unavailable: " + e.message); });
+    start(context).catch((e) => {
+      context.close(); stream?.getTracks().forEach((t) => t.stop()); stream = null;
+      audioMode("playback");
+      set("idle", "Microphone unavailable: " + e.message);
+    });
+  } else if (state === "listening") {
+    finish();
+  } else if (state === "waiting" || state === "speaking") {
+    stopped = true; turn++; queue = []; voice.pause(); controller?.abort();
+    set("idle", "Stopped. The answer stays in Paseo.");
   }
-  else if (state === "listening") finish();
-  else if (state === "speaking") { stopQueue = true; turn++; voice.pause(); set("idle", "Tap to talk", "Stopped."); }
+}
+// Tap to start and tap to send, or hold while you talk and let go to send.
+button.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  button.setPointerCapture?.(event.pointerId);
+  press();
 });
+const release = () => {
+  // A hold sends on release; a slow tap (let go before the mic had been open a moment) keeps listening.
+  if (pressedAt && state === "listening" && Date.now() - listeningAt > 700) finish();
+  pressedAt = 0;
+};
+button.addEventListener("pointerup", release);
+button.addEventListener("pointercancel", release);
+button.addEventListener("keydown", (event) => {
+  if ((event.key === " " || event.key === "Enter") && !event.repeat) { event.preventDefault(); press(); }
+});
+set("idle");
 </script>
 </body>
 </html>

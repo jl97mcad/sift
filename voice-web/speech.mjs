@@ -79,6 +79,45 @@ export function latestReply(entries, prompt) {
   return entries.slice(start).filter((e) => e.item.type === "assistant_message" && e.item.text).map((e) => e.item.text).join("\n\n");
 }
 
+/** End of the last complete sentence: what can be spoken while the agent is still writing. */
+export function settledLength(text) {
+  const fences = text.split("```").length - 1;
+  const usable = fences % 2 ? text.slice(0, text.lastIndexOf("```")) : text;
+  let end = 0;
+  for (const match of usable.matchAll(/[.!?:;]["')\]]*\s|\n/g)) end = match.index + match[0].length;
+  return end;
+}
+
+/** A plain label for what the agent is doing, from one timeline item. */
+export function stepLabel(item) {
+  if (item.type === "reasoning") return "Thinking";
+  if (item.type !== "tool_call") return null;
+  const command = item.detail?.command ?? "";
+  const rules = [
+    [/STATE\.md/, "Reading the god session's notes"],
+    [/scratchpad/, "Reading Control's scratchpad"],
+    [/overnight-|day log/, "Reading Control's day log"],
+    [/asks\.json/, "Checking what needs you"],
+    [/\bboard\b/, "Reading the board"],
+    [/paseo (agent )?(ls|list)/, "Checking sessions"],
+    [/paseo (agent )?logs/, "Reading a session"],
+    [/paseo (agent )?send/, "Messaging a session"],
+    [/gh (api|pr)/, "Checking GitHub"],
+    [/\bdeja\b/, "Searching memory"],
+    [/\bdate\b/, "Checking the time"],
+    [/\bssh\b/, "Reading files on the box"],
+  ];
+  for (const [pattern, label] of rules) if (pattern.test(command)) return label;
+  if (item.name === "Read") return "Reading a file";
+  if (item.name === "WebSearch" || item.name === "WebFetch") return "Searching the web";
+  return command ? "Running a command" : `Using ${item.name ?? "a tool"}`;
+}
+
+/** One piece of text as speech. */
+export async function speakPiece(text) {
+  return speak(text, await key());
+}
+
 export async function speakText(text) {
   let spoken = plain(text);
   if (spoken.length > MAX_SPOKEN) spoken = spoken.slice(0, MAX_SPOKEN).replace(/\s+\S*$/, "") + ". That's the start; the rest is in Paseo.";
