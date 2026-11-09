@@ -242,12 +242,13 @@ function tick() {
   if (!on || !analyser) return;
   const rms = level(), now = Date.now();
   document.documentElement.style.setProperty("--level", Math.min(1, rms * 9).toFixed(2));
-  if (phase === "speaking" || phase === "thinking") {
+  if (phase === "thinking") return; // while it works out a reply, only a tap interrupts: a cough must not lose it
+  if (phase === "speaking") {
     // Barge-in: you talking over it stops it and starts your turn. Louder bar so it doesn't hear itself.
     if (rms > BARGE) {
       speechStart ||= now;
       if (now - speechStart > 220) {
-        if (phase === "speaking") resumable = [currentBytes, ...queue].filter(Boolean); // in case it was only a cough
+        resumable = [currentBytes, ...queue].filter(Boolean); // in case it was only a cough (replays this sentence)
         hush(); controller?.abort(); listen(); speechStart = now; set("hearing");
       }
     }
@@ -353,6 +354,7 @@ form.addEventListener("submit", (event) => {
   unlockPlayer(); // the send tap lets the reply play
   hush(); controller?.abort();
   if (on) set("thinking");
+  turnEndedAt = Date.now();
   converse("You typed", (signal) => fetch("/api/text", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }), signal }));
 });
 
