@@ -156,7 +156,7 @@ function set(next, text) {
   document.body.className = { off: "idle", listening: "listening", hearing: "listening", thinking: "waiting", speaking: "speaking" }[next];
   chip.textContent = { off: "Ready", listening: "Listening", hearing: "Hearing you", thinking: "Thinking", speaking: "Speaking" }[next];
   hint.textContent = text ?? { off: "Tap to start", listening: "Listening… tap to stop", hearing: "Go on…", thinking: "One sec…", speaking: "Talk over me to interrupt" }[next];
-  button.setAttribute("aria-label", !on ? "Start talking" : phase === "hearing" ? "Send now" : phase === "listening" ? "Stop the conversation" : "Interrupt");
+  button.setAttribute("aria-label", !on ? "Start talking" : phase === "hearing" ? "Send now" : phase === "listening" ? (Date.now() - spokeUntil < TAP_GRACE && !graceUsed ? "Keep listening" : "Stop the conversation") : "Interrupt");
   $("endChat").hidden = !on;
 }
 function el(tag, cls, text) { const n = document.createElement(tag); n.className = cls; if (text) n.textContent = text; return n; }
@@ -264,7 +264,7 @@ function tick() {
       }
     } else {
       speechStart = 0;
-      echo = echo * 0.95 + rms * 0.05; // how loud its own voice is on the mic right now
+      if (rms < bar * 0.8) echo = Math.min(0.1, echo * 0.95 + rms * 0.05); // its own voice on the mic, capped so quiet talk can't raise the bar for good
     }
     return;
   }
@@ -374,7 +374,7 @@ form.addEventListener("submit", (event) => {
 // The orb never hangs up by accident: a tap interrupts, or sends what you're saying. "End" or "bye" ends.
 button.addEventListener("click", () => {
   if (!on) begin().catch((e) => end("Microphone unavailable: " + e.message));
-  else if (phase === "speaking" || phase === "thinking") { hush(); controller?.abort(); listen(); set("listening", "Go ahead, I'm listening"); }
+  else if (phase === "speaking" || phase === "thinking") { hush(); controller?.abort(); listen(); graceUsed = true; set("listening", "Go ahead, I'm listening"); }
   else if (phase === "hearing") send(); // you're done: send now instead of waiting for the pause
   else if (Date.now() - spokeUntil < TAP_GRACE && !graceUsed) { graceUsed = true; set("listening", "Go ahead, I'm listening. Tap again to stop"); } // it had just stopped; you meant to cut in
   else end("Stopped. Tap to talk again.");
