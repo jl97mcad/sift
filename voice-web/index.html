@@ -30,25 +30,26 @@
 <script>
 const button = document.getElementById("talk"), status = document.getElementById("status");
 const log = document.getElementById("log"), voice = document.getElementById("voice");
-let recorder, chunks = [], stream, meter, stopQueue = false, state = "idle";
+let recorder, chunks = [], stream, meter, stopQueue = false, state = "idle", turn = 0;
 
 function set(next, label, text) { state = next; button.className = next; button.textContent = label; status.textContent = text; }
 function say(cls, text) { const p = document.createElement("p"); p.className = cls; p.textContent = text; log.prepend(p); }
 
 async function play(url) {
   voice.src = url;
-  await voice.play().catch(() => {});
-  await new Promise((done) => { voice.onended = done; voice.onerror = done; voice.onpause = done; });
+  const ended = new Promise((done) => { voice.onended = done; voice.onerror = done; voice.onpause = done; });
+  try { await voice.play(); } catch { return; } // nothing to play, or blocked: move on
+  await ended;
 }
 
-async function start() {
+async function start(context) {
   stream = stream ?? await navigator.mediaDevices.getUserMedia({ audio: true });
   const type = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"].find((t) => MediaRecorder.isTypeSupported(t)) ?? "";
   recorder = new MediaRecorder(stream, type ? { mimeType: type } : {});
   chunks = [];
   recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   recorder.start();
-  const context = new AudioContext(), analyser = context.createAnalyser(), data = new Uint8Array(256);
+  const analyser = context.createAnalyser(), data = new Uint8Array(256);
   context.createMediaStreamSource(stream).connect(analyser);
   meter = setInterval(() => {
     analyser.getByteTimeDomainData(data);
@@ -60,6 +61,8 @@ async function start() {
 }
 
 async function finish() {
+  const mine = ++turn;
+  const settle = (label, text) => { if (turn === mine) set("idle", label, text); };
   clearInterval(meter); meter.context.close(); button.style.setProperty("--level", 0);
   const stopped = new Promise((done) => (recorder.onstop = done));
   recorder.stop();
@@ -72,23 +75,29 @@ async function finish() {
     const response = await fetch("/api/talk", { method: "POST", headers: { "Content-Type": blob.type }, body: blob });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Something went wrong.");
-    if (!result.heard) { set("idle", "Tap to talk", "Didn't catch anything; nothing was sent."); return; }
+    if (!result.heard) { settle("Tap to talk", "Didn't catch anything; nothing was sent."); return; }
     say("you", result.heard);
     if (result.reply) say("sift", result.reply);
+    if (turn !== mine) return;
     set("speaking", "Tap to stop", "Speaking…");
     stopQueue = false;
     while (!voice.paused) await new Promise((r) => setTimeout(r, 100)); // let the acknowledgement finish
-    for (const clip of result.clips) { if (stopQueue) break; await play("data:audio/mpeg;base64," + clip); }
-    set("idle", "Tap to talk", "Tap, talk, tap again to send.");
+    for (const clip of result.clips) { if (stopQueue || turn !== mine) break; await play("data:audio/mpeg;base64," + clip); }
+    settle("Tap to talk", "Tap, talk, tap again to send.");
   } catch (error) {
-    set("idle", "Tap to talk", error.message);
+    settle("Tap to talk", error.message);
   }
 }
 
 button.addEventListener("click", () => {
-  if (state === "idle") start().catch((e) => set("idle", "Tap to talk", "Microphone unavailable: " + e.message));
+  if (state === "idle") {
+    // Made inside the tap so iPhone lets the level meter run.
+    const context = new AudioContext();
+    context.resume();
+    start(context).catch((e) => { context.close(); set("idle", "Tap to talk", "Microphone unavailable: " + e.message); });
+  }
   else if (state === "listening") finish();
-  else if (state === "speaking") { stopQueue = true; voice.pause(); set("idle", "Tap to talk", "Stopped."); }
+  else if (state === "speaking") { stopQueue = true; turn++; voice.pause(); set("idle", "Tap to talk", "Stopped."); }
 });
 </script>
 </body>

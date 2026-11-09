@@ -26,7 +26,10 @@ async function body(request) {
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > MAX_AUDIO) throw new Error("Recording too long.");
+    if (size > MAX_AUDIO) {
+      request.destroy();
+      throw new Error("Recording too long.");
+    }
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
