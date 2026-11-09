@@ -144,7 +144,7 @@ const SPEECH = 0.045, BARGE = 0.12, END_SILENCE = 700, MIN_SPEECH = 450, MAX_TUR
 let floor = 0.01, deaf = 0; // the room's quiet level, and a moment after it speaks when it doesn't listen
 // ponytail: echo-aware barge-in. While it speaks, the mic hears some of its own voice even with echo
 // cancellation; that level is tracked and you must be clearly louder than it, for 300 ms, to cut in.
-let echo = 0.03, clipStartedAt = 0, spokeUntil = 0;
+let echo = 0.03, clipStartedAt = 0, spokeUntil = 0, graceUsed = false;
 const ECHO_RATIO = 2.5, BARGE_HOLD = 300, CLIP_ONSET = 350, TAP_GRACE = 5000;
 
 let endAfterSpeech = false, on = false, phase = "off", stream, mic, analyser, data, recorder, chunks = [], speechStart = 0, lastLoud = 0, listenSince = 0, loopTimer;
@@ -156,7 +156,7 @@ function set(next, text) {
   document.body.className = { off: "idle", listening: "listening", hearing: "listening", thinking: "waiting", speaking: "speaking" }[next];
   chip.textContent = { off: "Ready", listening: "Listening", hearing: "Hearing you", thinking: "Thinking", speaking: "Speaking" }[next];
   hint.textContent = text ?? { off: "Tap to start", listening: "Listening… tap to stop", hearing: "Go on…", thinking: "One sec…", speaking: "Talk over me to interrupt" }[next];
-  button.setAttribute("aria-label", !on ? "Start talking" : phase === "hearing" ? "Send now" : "Interrupt");
+  button.setAttribute("aria-label", !on ? "Start talking" : phase === "hearing" ? "Send now" : phase === "listening" ? "Stop the conversation" : "Interrupt");
   $("endChat").hidden = !on;
 }
 function el(tag, cls, text) { const n = document.createElement(tag); n.className = cls; if (text) n.textContent = text; return n; }
@@ -253,8 +253,8 @@ function tick() {
   document.documentElement.style.setProperty("--level", Math.min(1, rms * 9).toFixed(2));
   if (phase === "thinking") return; // while it works out a reply, only a tap interrupts: a cough must not lose it
   if (phase === "speaking") {
-    spokeUntil = now;
-    if (now - clipStartedAt < CLIP_ONSET) return; // each clip's first moment is loud on the mic; never a barge-in
+    spokeUntil = now; graceUsed = false;
+    if (now - clipStartedAt < CLIP_ONSET) { echo = echo * 0.8 + rms * 0.2; return; } // learn this clip's echo first; never a barge-in
     const bar = Math.max(BARGE, echo * ECHO_RATIO);
     if (rms > bar) {
       speechStart ||= now;
@@ -376,7 +376,7 @@ button.addEventListener("click", () => {
   if (!on) begin().catch((e) => end("Microphone unavailable: " + e.message));
   else if (phase === "speaking" || phase === "thinking") { hush(); controller?.abort(); listen(); set("listening", "Go ahead, I'm listening"); }
   else if (phase === "hearing") send(); // you're done: send now instead of waiting for the pause
-  else if (Date.now() - spokeUntil < TAP_GRACE) set("listening", "Go ahead, I'm listening"); // it had just stopped; you meant to cut in
+  else if (Date.now() - spokeUntil < TAP_GRACE && !graceUsed) { graceUsed = true; set("listening", "Go ahead, I'm listening. Tap again to stop"); } // it had just stopped; you meant to cut in
   else end("Stopped. Tap to talk again.");
 });
 $("endChat").addEventListener("click", () => end("Ended. Tap to talk again."));
