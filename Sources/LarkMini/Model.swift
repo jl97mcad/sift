@@ -11,15 +11,42 @@ struct Chat: Identifiable, Equatable, Hashable, Codable {
     let link: URL?
     var peerId: String? = nil
 
+    /// The name without its tags, so the real name fits: "Devs - Agents Room [INTERNAL]" -> "Devs - Agents Room".
     var displayName: String {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = ChatTitle.split(name).name
         if !trimmed.isEmpty { return trimmed }
         return isP2P ? "Direct chat" : "Group chat"
     }
 
-    var initials: String {
-        let parts = name.split(separator: " ").prefix(2)
-        let letters = parts.compactMap { $0.first }.map(String.init).joined()
+    /// Tags like [INTERNAL] or a leading "Int |", shown as a small badge.
+    var tags: [String] { ChatTitle.split(name).tags }
+
+    var initials: String { ChatTitle.initials(displayName) }
+}
+
+enum ChatTitle {
+    static func split(_ raw: String) -> (name: String, tags: [String]) {
+        var name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var tags: [String] = []
+        // [INTERNAL], [EXT] anywhere.
+        while let range = name.range(of: #"\[([^\]]{1,16})\]"#, options: .regularExpression) {
+            tags.append(String(name[range].dropFirst().dropLast()).trimmingCharacters(in: .whitespaces))
+            name.removeSubrange(range)
+        }
+        // A short leading label before a bar: "Int | Full Crumbs".
+        if let bar = name.range(of: #"^\s*[A-Za-z]{2,8}\s*\|\s*"#, options: .regularExpression) {
+            tags.insert(name[bar].replacingOccurrences(of: "|", with: "").trimmingCharacters(in: .whitespaces), at: 0)
+            name.removeSubrange(bar)
+        }
+        name = name.replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: "-–—|/")))
+        return (name, tags.filter { !$0.isEmpty }.map { $0.uppercased() })
+    }
+
+    /// First letters of the first two real words; dashes, slashes and symbols are not words.
+    static func initials(_ name: String) -> String {
+        let words = name.split { !$0.isLetter && !$0.isNumber }.filter { $0.first?.isLetter == true || $0.first?.isNumber == true }
+        let letters = words.prefix(2).compactMap(\.first).map(String.init).joined()
         return letters.isEmpty ? "?" : letters.uppercased()
     }
 }
@@ -243,7 +270,18 @@ struct ControlSeat: Codable, Equatable, Identifiable {
         return ControlSeat(agentId: agentId, title: title, host: host, provider: provider, name: name)
     }
 
-    var label: String { name.isEmpty ? title : name }
+    /// What the rail and header show: the chosen name, else Paseo's title without the owner,
+    /// host or handoff note ("Jon's Control (AWS) — auto handoff" -> "Control").
+    var label: String { name.isEmpty ? Self.shortTitle(title) : name }
+
+    static func shortTitle(_ title: String) -> String {
+        var short = title
+        for pattern in [#"\s+[—–-]\s+.*$"#, #"\s*\([^)]*\)"#, #"^\[[^\]]*\]\s*"#, #"^\w+['’]s\s+"#] {
+            short = short.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        }
+        short = short.trimmingCharacters(in: .whitespaces)
+        return short.isEmpty ? title : short
+    }
     /// The Control seat is the one whose label says Control (Paseo titles them "Jon's Control (AWS)").
     var isControl: Bool { label.localizedCaseInsensitiveContains("control") }
     var palette: FacePalette { FacePalette.named(color.isEmpty ? FacePalette.pick(for: label) : color) }

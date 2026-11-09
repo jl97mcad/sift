@@ -67,4 +67,16 @@ final class VoiceTests: XCTestCase {
         XCTAssertEqual(VoiceMode.level(0), 1)
         XCTAssertGreaterThan(VoiceMode.level(-20), VoiceMode.level(-40))
     }
+
+    func testNamesFitAndInitialsNeverWrap() {
+        XCTAssertEqual(ControlSeat.shortTitle("Jon's Control (AWS) — auto handoff"), "Control")
+        XCTAssertEqual(ControlSeat.shortTitle("Finance"), "Finance")
+        XCTAssertEqual(ChatTitle.split("Devs - Agents Room [INTERNAL]").name, "Devs - Agents Room")
+        XCTAssertEqual(ChatTitle.split("Devs - Agents Room [INTERNAL]").tags, ["INTERNAL"])
+        XCTAssertEqual(ChatTitle.split("Int | Full Crumbs x Outlandish").name, "Full Crumbs x Outlandish")
+        XCTAssertEqual(ChatTitle.split("Int | Full Crumbs x Outlandish").tags, ["INT"])
+        XCTAssertEqual(ChatTitle.initials("Devs - Agents Room"), "DA")
+        XCTAssertEqual(ChatTitle.initials("Mattel / LCG"), "ML")
+        XCTAssertEqual(ChatTitle.initials("D-"), "D")
+    }
 }

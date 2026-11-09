@@ -144,6 +144,8 @@ struct ChatRow: View {
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Text(chat.displayName).font(.system(size: 13, weight: store.isUnread(chat) ? .semibold : .medium)).lineLimit(1)
+                                .help(chat.name)
+                            ForEach(chat.tags, id: \.self) { TagBadge(text: $0) }
                             Spacer(minLength: 0)
                             if let preview = store.previews[chat.id] {
                                 Text(TimeFormat.short(preview.ts)).font(.system(size: 11)).monospacedDigit()

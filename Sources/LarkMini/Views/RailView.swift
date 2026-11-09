@@ -137,7 +137,7 @@ struct SeatRailItem: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(seat.attentionSummary.map { seat.label + " · " + $0 } ?? seat.label)
+        .help(seat.attentionSummary.map { seat.config.title + " · " + $0 } ?? seat.config.title)
         .accessibilityLabel(seat.attentionSummary.map { seat.label + ", " + $0 } ?? seat.label)
         .onDrag { NSItemProvider(object: ("seat:" + seat.id) as NSString) }
         .onDrop(of: [.text], isTargeted: Binding(
