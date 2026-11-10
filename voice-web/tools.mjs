@@ -109,7 +109,7 @@ async function fast(api, verb, rest, name) {
   if (verb === "logs") {
     const tail = Math.min(40, Math.max(1, Number(flags["--tail"]?.[0]) || 15));
     // Tool steps collapse to one line per run, so fetch more than the lines shown.
-    const page = await api.agents.ref(agent.id).timeline.refetch({ direction: "tail", limit: Math.min(160, tail * 4), projection: "projected" });
+    const page = await api.agents.ref(agent.id).timeline.refetch({ direction: "tail", limit: Math.min(200, tail * 6), projection: "projected" });
     return fit(digestLogs(agent, page.entries.map((e) => e.item), tail, name), true);
   }
   if (verb === "inspect") {

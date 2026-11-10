@@ -79,7 +79,7 @@ export function answerArgv(ask, answer) {
   return ["board", "answered", ask.plan, "--ask-id", ask.ask_id, "--text", answer, "--summary", summaryFor(answer), "--action", "answer"];
 }
 
-const NUMBER_WORDS = new Set("oh zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty thirty forty fifty sixty seventy eighty ninety hundred thousand jon john plan number".split(" "));
+const PLAN_WORDS = new Set("jon john plan number".split(" ")); // numbers said aloud are in what was heard, so they're checked like any word
 const wordsOf = (text) => String(text ?? "").toLowerCase().replace(/[’']/g, "").split(/[^a-z0-9]+/).filter(Boolean);
 
 /**
@@ -90,7 +90,7 @@ const wordsOf = (text) => String(text ?? "").toLowerCase().replace(/[’']/g, ""
 export function notHeard(answer, heard, plan = "") {
   const have = new Set(wordsOf(heard));
   const planWords = new Set(wordsOf(plan)); // "JON-4164" may be heard as "John forty-one sixty-four"
-  return wordsOf(answer).filter((w) => !have.has(w) && !NUMBER_WORDS.has(w) && !planWords.has(w) && !/^[a-z]{2,10}\d+$/.test(w));
+  return wordsOf(answer).filter((w) => !have.has(w) && !PLAN_WORDS.has(w) && !planWords.has(w) && !/^[a-z]{2,10}\d+$/.test(w));
 }
 
 /** A clear yes ("yes", "go ahead", "record it"), with no "no" or "don't" in it. */
@@ -124,8 +124,7 @@ export function run(command, input, timeoutMs = 45_000) {
  * The answer_ask tool. deps (for tests): list() gives asks.json text, write(argv) runs the write,
  * log(line) records what happened, now() the time.
  */
-export async function answerAsk(config, { plan, answer, confirmed, which, _heard: heard, _turn: turn, _last: last } = {}, deps = {}) {
-  // (_call, the bot's id for the call, is used by the server for the call's note.)
+export async function answerAsk(config, { plan, answer, confirmed, which, _heard: heard, _turn: turn, _last: last, _call: call = "" } = {}, deps = {}) {
   const person = config.person || "the person";
   const list = deps.list ?? (async () => {
     const r = await run(config.asks.listCommand, "", 20_000);
@@ -154,7 +153,8 @@ export async function answerAsk(config, { plan, answer, confirmed, which, _heard
   const ask = found[0];
   const title = short(ask.title || ask.question, 140);
   const before = pending.get(ask.ask_id);
-  const fresh = before && now() - before.at < READBACK_MINUTES * 60_000 && same(before.answer, words);
+  // A read-back counts only in the call it was spoken in, for the same words, and not for long.
+  const fresh = before && before.call === call && now() - before.at < READBACK_MINUTES * 60_000 && same(before.answer, words);
   // The yes has to come from the person after they heard the read-back: a later turn, and a clear yes.
   if (confirmed === true && fresh && (turn === undefined || last === undefined)) {
     return "Not recorded: there's no record of the person's reply to the read-back here.";
@@ -166,7 +166,7 @@ export async function answerAsk(config, { plan, answer, confirmed, which, _heard
     return `Not recorded: "${short(last, 120)}" isn't a clear yes to the read-back. Ask again, or leave it.`;
   }
   if (confirmed !== true || !fresh) {
-    pending.set(ask.ask_id, { answer: words, at: now(), turn });
+    pending.set(ask.ask_id, { answer: words, at: now(), turn, call });
     const serious = SERIOUS.has(ask.kind);
     const lead = confirmed === true ? "Not recorded yet: that yes didn't follow a read-back of these exact words. Read this back first. " : "";
     return `${lead}Nothing is written yet. Speak this read-back and wait for a clear yes: "Recording your answer to ${title}: '${words}'. ${consequence(ask)}${consequence(ask) ? " " : ""}Shall I?"` +

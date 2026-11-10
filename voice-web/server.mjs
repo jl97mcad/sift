@@ -452,7 +452,7 @@ async function turn(request, response, typed) {
         paseo: (args) => paseo(config, args, open), skill: (args) => skill(config, args),
         catch_up: catchUp, answer_ask: (args) => {
           const said = history.filter((m) => m.role === "user" && !String(m.content).startsWith("(")).map((m) => String(m.content));
-          return answerAskTool({ ...args, _heard: said.slice(-3).join(" "), _last: said.at(-1) ?? "", _turn: said.length });
+          return answerAskTool({ ...args, _heard: said.slice(-3).join(" "), _last: said.at(-1) ?? "", _turn: said.length, _call: "text" });
         },
         recall: (args) => recall(config, args),
         end_conversation: () => { emit({ type: "end" }); return "Ended. The phone stops listening after your goodbye."; } }, (delta) => {
