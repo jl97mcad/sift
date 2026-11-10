@@ -136,6 +136,7 @@ export async function speakPiece(text) {
 export function looksUnfinished(text) {
   const t = text.trim().toLowerCase();
   if (/(\.\.\.|…)$/.test(t)) return true;
+  if (/[?!]$/.test(t)) return false; // "What is this for?" is a whole question
   const last = t.replace(/[.!?,;:]+$/, "").split(/\s+/).at(-1) ?? "";
   return /[,;:-]$/.test(t) || new Set(["the", "a", "an", "and", "or", "but", "to", "of", "at", "in", "on", "for", "with", "about",
     "that", "so", "because", "like", "my", "your", "our", "this", "these", "if", "then", "um", "uh", "er"]).has(last);

@@ -259,9 +259,10 @@ function tick() {
   document.documentElement.style.setProperty("--level", Math.min(1, rms * 9).toFixed(2));
   if (phase === "thinking") {
     // You carried on before it answered: drop the half-turn and keep listening, joining both parts.
-    if (!muted && !replyStarted && heardNow && rms > Math.max(SPEECH, floor * 3)) {
+    // Talking is tracked from the start; it acts once the first part's words are known.
+    if (!muted && !replyStarted && rms > Math.max(SPEECH, floor * 3)) {
       speechStart ||= now;
-      if (now - speechStart > 400) {
+      if (heardNow && now - speechStart > 400) {
         pending = { text: heardNow, count: (pending?.count ?? 0) + 1, bubble: lastBubble };
         lastReply?.remove();
         generation += 1; controller?.abort();
@@ -422,6 +423,7 @@ form.addEventListener("submit", (event) => {
   const text = typed.value.trim();
   if (!text) return;
   typed.value = ""; sendButton.disabled = true;
+  pending?.bubble?.remove(); pending = null; // typing starts a fresh question
   unlockPlayer(); // the send tap lets the reply play
   hush(); controller?.abort();
   if (on) set("thinking");
