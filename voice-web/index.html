@@ -153,7 +153,7 @@ let endAfterSpeech = false, on = false, phase = "off", stream, mic, analyser, da
 let player, current, currentBytes, queue = [], playing = false, generation = 0, controller, later = [];
 let resumable = null, turnEndedAt = 0;
 let pending = null; // { text, count, bubble }: words said before a pause that cut you off; the next turn carries on
-let carried = 0, heardNow = "", replyStarted = false, working = new Map(); // this turn's words; background jobs by id // what an interruption cut off, and when the last turn ended
+let turnCount = 0, carried = 0, heardNow = "", replyStarted = false, working = new Map(); // this turn's words; background jobs by id // what an interruption cut off, and when the last turn ended
 
 function set(next, text) {
   phase = next;
@@ -263,7 +263,7 @@ function tick() {
     if (!muted && !replyStarted && rms > Math.max(SPEECH, floor * 3)) carried += 40;
     if (carried > 400 && heardNow && !replyStarted && !muted) {
       carried = 0;
-      pending = { text: heardNow, count: (pending?.count ?? 0) + 1, bubble: lastBubble };
+      pending = { text: heardNow, count: turnCount + 1, bubble: lastBubble };
       lastReply?.remove();
       generation += 1; controller?.abort();
       lastLoud = now; listenSince = now; speechStart = now; set("hearing", "Go on…");
@@ -313,6 +313,7 @@ async function send() {
   if (on && !muted) record(); // standby: if you carry on talking, nothing you say is lost
   const before = pending;
   pending = null;
+  turnCount = before?.count ?? 0;
   before?.bubble?.remove();
   const headers = { "Content-Type": blob.type };
   if (before) { headers["x-said-before"] = encodeURIComponent(before.text); headers["x-continuations"] = String(before.count); }

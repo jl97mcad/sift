@@ -21,4 +21,5 @@ assert.ok(looksUnfinished("Take a look at the..."));
 assert.ok(!looksUnfinished("Take a look at the god chat and the focuses it's raised."));
 assert.ok(!looksUnfinished("What needs me?"));
 assert.ok(!looksUnfinished("What is this for?"));
+assert.ok(!looksUnfinished("Turn it on."));
 console.log("ok");
