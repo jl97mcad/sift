@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { plain, pieces, settledLength, stepLabel, progressLine, isPhantom } from "./speech.mjs";
+import { plain, pieces, settledLength, stepLabel, progressLine, isPhantom, looksUnfinished } from "./speech.mjs";
 assert.equal(plain("**Shop** is [merged](http://x).\n```sh\nrm -rf /\n```"), "Shop is merged.");
 assert.deepEqual(pieces("One. Two. Three."), ["One.", "Two. Three."]);
 assert.equal(settledLength("Done. Still writ"), 6);
@@ -16,4 +16,10 @@ assert.ok(!isPhantom("Okay, check on the Mattel plan."));
 assert.ok(!isPhantom("Bye for now, but first queue the plan."));
 assert.ok(!isPhantom("Bye."));
 assert.ok(!isPhantom("Привет", "ru"));
+assert.ok(looksUnfinished("Take a look at"));
+assert.ok(looksUnfinished("Take a look at the..."));
+assert.ok(!looksUnfinished("Take a look at the god chat and the focuses it's raised."));
+assert.ok(!looksUnfinished("What needs me?"));
+assert.ok(!looksUnfinished("What is this for?"));
+assert.ok(!looksUnfinished("Turn it on."));
 console.log("ok");

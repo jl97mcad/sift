@@ -10,7 +10,7 @@ import { createHostClient } from "@getpaseo/client/node";
 import { writeFile, chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isPhantom, pieces, plain, progressLine, settledLength, speakPiece, stepLabel, transcribe } from "./speech.mjs";
+import { isPhantom, looksUnfinished, pieces, plain, progressLine, settledLength, speakPiece, stepLabel, transcribe } from "./speech.mjs";
 import { respond, summarise, workersOf } from "./front.mjs";
 
 const PORT = Number(process.env.PORT ?? 8771);
@@ -107,7 +107,7 @@ async function session(worker, plan) {
   return { client, agent: found.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0] };
 }
 
-const view = (job) => ({ id: job.id, task: job.task, to: job.to, status: job.status, steps: job.steps.slice(-4), reply: job.reply });
+const view = (job) => ({ id: job.id, task: job.task, to: job.to, status: job.status, steps: job.steps.slice(-4), reply: job.reply, started: job.started });
 
 function delegate({ task, to, plan }, heard) {
   const workers = workersOf(config);
@@ -141,6 +141,9 @@ function jobStatus() {
 
 /** Hands one task to the worker and follows it until it finishes, then speaks the result. */
 async function run(job) {
+  // A moment's grace: a turn abandoned within it (the person carried on talking) never starts its task.
+  await sleep(1200);
+  if (job.cancelled) { job.status = "cancelled"; broadcast({ type: "job", job: view(job) }); return; }
   job.status = "running";
   broadcast({ type: "job", job: view(job) });
   const prompt = `(${config.person}, by voice through their assistant. Do this, then reply in a few short plain sentences; your reply is summarised aloud.)\n\n${job.task}`;
@@ -237,8 +240,15 @@ async function turn(request, response, typed) {
   response.on("close", () => (open = false));
   const emit = (event) => open && response.write(JSON.stringify(event) + "\n");
   try {
-    const heard = typed ?? await transcribe(audio, request.headers["content-type"] ?? "audio/webm", config.language ?? "en");
-    if (isPhantom(heard, config.language ?? "en")) return emit({ type: "heard", text: "" });
+    const words = typed ?? await transcribe(audio, request.headers["content-type"] ?? "audio/webm", config.language ?? "en");
+    // What was said before a pause that cut the person off; this turn carries on from it.
+    let before = "";
+    try { before = decodeURIComponent(request.headers["x-said-before"] ?? "").slice(0, 2000); } catch {}
+    if (isPhantom(words, config.language ?? "en") && !before) return emit({ type: "heard", text: "" });
+    const heard = isPhantom(words, config.language ?? "en") ? before : `${before} ${words}`.trim();
+    // Stopped mid-thought: show it and wait for the rest, at most twice, before answering.
+    const waits = Number(request.headers["x-continuations"] ?? 0);
+    if (!typed && waits < 2 && looksUnfinished(heard)) return emit({ type: "heard", text: heard, unfinished: true });
     emit({ type: "heard", text: heard });
     await serial(async () => {
       let text = "";
@@ -250,7 +260,17 @@ async function turn(request, response, typed) {
           speech = speech.then(async () => { const data = await clip; if (data) emit({ type: "audio", data }); });
         }
       };
-      await respond(config, history, heard, { delegate: (args) => delegate(args, heard), job_status: jobStatus, needs_queue: needsQueue, stay_quiet: () => "Staying quiet.",
+      const started = [];
+      // The phone may have hung up already (it carried on talking): then nothing this turn starts may run.
+      const abandon = () => started.forEach((job) => (job.cancelled = true));
+      response.on("close", () => { if (!response.writableFinished) abandon(); });
+      await respond(config, history, heard, { delegate: (args) => {
+        const before = jobs.at(-1);
+        const reply = delegate(args, heard);
+        const job = jobs.at(-1);
+        if (job && job !== before) { started.push(job); if (!open) abandon(); } // only a job this call created
+        return reply;
+      }, job_status: jobStatus, needs_queue: needsQueue, stay_quiet: () => "Staying quiet.",
         handoffLine: (calls) => {
           const workers = workersOf(config);
           const lines = calls.map(({ to }) => workers.find((w) => w.name === to)?.handoff ?? `I'll ask ${to ?? "the team"}`);

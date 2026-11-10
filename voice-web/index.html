@@ -106,6 +106,7 @@
   /* Work card, after ReUI's ai-chat-8: who was asked, then each check with a tick. */
   .job { border: 1px solid var(--line); background: var(--panel); border-radius: 16px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; animation: rise .3s ease-out both; }
   .job .head { font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .job .head .time { margin-left: auto; font-variant-numeric: tabular-nums; }
   .job .head::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--mint); animation: breathe 1.2s ease-in-out infinite; }
   .job.done .head::before { background: var(--green); animation: none; }
   .job.failed .head::before { background: #ff8a7a; animation: none; }
@@ -144,19 +145,23 @@ const SPEECH = 0.045, BARGE = 0.12, END_SILENCE = 700, MIN_SPEECH = 450, MAX_TUR
 let floor = 0.01, deaf = 0; // the room's quiet level, and a moment after it speaks when it doesn't listen
 // ponytail: echo-aware barge-in. While it speaks, the mic hears some of its own voice even with echo
 // cancellation; that level is tracked and you must be clearly louder than it, for 300 ms, to cut in.
-let echo = 0.03, clipStartedAt = 0, spokeUntil = 0, graceUsed = false;
-const ECHO_RATIO = 2.5, BARGE_HOLD = 300, CLIP_ONSET = 350, TAP_GRACE = 5000;
+let echo = 0.03, clipStartedAt = 0, spokeUntil = 0;
+const ECHO_RATIO = 2.5, BARGE_HOLD = 300, CLIP_ONSET = 350;
+let muted = false; // tapped out: not listening, but the conversation (replies, news) carries on
 
 let endAfterSpeech = false, on = false, phase = "off", stream, mic, analyser, data, recorder, chunks = [], speechStart = 0, lastLoud = 0, listenSince = 0, loopTimer;
 let player, current, currentBytes, queue = [], playing = false, generation = 0, controller, later = [];
-let resumable = null, turnEndedAt = 0; // what an interruption cut off, and when the last turn ended
+let resumable = null, turnEndedAt = 0;
+let pending = null; // { text, count, bubble }: words said before a pause that cut you off; the next turn carries on
+let turnCount = 0, carried = 0, heardNow = "", replyStarted = false, working = new Map(); // this turn's words; background jobs by id // what an interruption cut off, and when the last turn ended
 
 function set(next, text) {
   phase = next;
-  document.body.className = { off: "idle", listening: "listening", hearing: "listening", thinking: "waiting", speaking: "speaking" }[next];
-  chip.textContent = { off: "Ready", listening: "Listening", hearing: "Hearing you", thinking: "Thinking", speaking: "Speaking" }[next];
-  hint.textContent = text ?? { off: "Tap to start", listening: "Listening… tap to stop", hearing: "Go on…", thinking: "One sec…", speaking: "Talk over me to interrupt" }[next];
-  button.setAttribute("aria-label", !on ? "Start talking" : phase === "hearing" ? "Send now" : phase === "listening" ? (Date.now() - spokeUntil < TAP_GRACE && !graceUsed ? "Keep listening" : "Stop the conversation") : "Interrupt");
+  setTimeout(chipWork, 0);
+  document.body.className = { off: "idle", muted: "idle", listening: "listening", hearing: "listening", thinking: "waiting", speaking: "speaking" }[next];
+  chip.textContent = { off: "Ready", muted: "Not listening", listening: "Listening", hearing: "Hearing you", thinking: "Thinking", speaking: "Speaking" }[next];
+  hint.textContent = text ?? { off: "Tap to start", muted: "Not listening · tap to talk", listening: "Listening · tap to pause", hearing: "Go on…", thinking: "One sec…", speaking: "Talk over me to interrupt" }[next];
+  button.setAttribute("aria-label", !on ? "Start talking" : { hearing: "Send now", listening: "Stop listening", muted: "Listen" }[phase] ?? "Interrupt and listen");
   $("endChat").hidden = !on;
 }
 function el(tag, cls, text) { const n = document.createElement(tag); n.className = cls; if (text) n.textContent = text; return n; }
@@ -199,7 +204,7 @@ async function playQueue() {
   if (mine !== generation) return; // a newer loop owns the flags now
   current = null; playing = false;
   if (endAfterSpeech) { endAfterSpeech = false; end("Bye. Tap to talk again."); return; }
-  if (on && phase === "speaking") listen();
+  if (on && phase === "speaking") muted ? set("muted") : listen();
 }
 function speak(b64) { queue.push(clipBytes(b64)); playQueue(); }
 function hush() { endAfterSpeech = false; generation += 1; queue = []; try { current?.stop(); } catch {} current = null; playing = false; }
@@ -218,6 +223,7 @@ async function begin() {
   loopTimer = setInterval(tick, 40);
 }
 function end(text) {
+  pending?.bubble?.remove(); pending = null; muted = false; // a half-finished sentence never carries into the next chat
   on = false; hush(); controller?.abort();
   clearInterval(loopTimer);
   try { recorder?.state === "recording" && recorder.stop(); } catch {}
@@ -251,9 +257,21 @@ function tick() {
   if (!on || !analyser) return;
   const rms = level(), now = Date.now();
   document.documentElement.style.setProperty("--level", Math.min(1, rms * 9).toFixed(2));
-  if (phase === "thinking") return; // while it works out a reply, only a tap interrupts: a cough must not lose it
+  if (phase === "thinking") {
+    // You carried on before it answered: drop the half-turn and keep listening, joining both parts.
+    // Talking is counted from the start (even before the first part's words are back) and acted on once they are.
+    if (!muted && !replyStarted && rms > Math.max(SPEECH, floor * 3)) carried += 40;
+    if (carried > 400 && heardNow && !replyStarted && !muted) {
+      carried = 0;
+      pending = { text: heardNow, count: turnCount + 1, bubble: lastBubble };
+      lastReply?.remove();
+      generation += 1; controller?.abort();
+      lastLoud = now; listenSince = now; speechStart = now; set("hearing", "Go on…");
+    }
+    return;
+  }
   if (phase === "speaking") {
-    spokeUntil = now; graceUsed = false;
+    spokeUntil = now;
     if (now - clipStartedAt < CLIP_ONSET) { // learn this clip's echo first (capped); never a barge-in
       speechStart = 0;
       echo = Math.min(0.1, echo * 0.8 + rms * 0.2);
@@ -278,7 +296,7 @@ function tick() {
     if (rms > Math.max(SPEECH, floor * 3)) { lastLoud = now; if (!speechStart) speechStart = now; if (phase === "listening" && now - speechStart > 150) set("hearing"); }
     if (phase === "hearing" && now - lastLoud > END_SILENCE && lastLoud - speechStart > MIN_SPEECH) send();
     else if (phase === "hearing" && now - listenSince > MAX_TURN) send();
-    else if (phase === "listening" && !speechStart && now - listenSince > IDLE_PAUSE) end("Paused. Tap to talk again.");
+    else if (phase === "listening" && !speechStart && now - listenSince > IDLE_PAUSE) end(working.size ? "Paused. I'll still tell you when the work's done." : "Paused. Tap to talk again.");
     if (phase === "hearing" && now - lastLoud > END_SILENCE && lastLoud - speechStart <= MIN_SPEECH) { speechStart = 0; set("listening"); }
   }
 }
@@ -286,20 +304,34 @@ function tick() {
 async function send() {
   set("thinking");
   turnEndedAt = Date.now();
+  heardNow = ""; replyStarted = false; speechStart = 0; carried = 0;
   const done = new Promise((resolve) => (recorder.onstop = resolve));
-  recorder.stop();
+  const finished = recorder;
+  finished.stop();
   await done;
-  const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
-  await converse("You said", (signal) => fetch("/api/turn", { method: "POST", headers: { "Content-Type": blob.type }, body: blob, signal }));
+  const blob = new Blob(chunks, { type: finished.mimeType || "audio/webm" });
+  if (on && !muted) record(); // standby: if you carry on talking, nothing you say is lost
+  const before = pending;
+  pending = null;
+  turnCount = before?.count ?? 0;
+  before?.bubble?.remove();
+  const headers = { "Content-Type": blob.type };
+  if (before) { headers["x-said-before"] = encodeURIComponent(before.text); headers["x-continuations"] = String(before.count); }
+  if (muted) headers["x-continuations"] = "2"; // you tapped out: you've finished, so never wait for more
+  const unfinished = await converse("You said", (signal) => fetch("/api/turn", { method: "POST", headers, body: blob, signal }), before?.count ?? 0);
+  if (unfinished && on) { listenSince = Date.now(); speechStart = 0; lastLoud = 0; set("listening", "Go on…"); }
 }
 
 /** One exchange, voice or typed: shows what was heard, streams the reply text and plays its speech. */
-async function converse(label, request) {
+let lastBubble = null, lastReply = null;
+async function converse(label, request, count = 0) {
   const mine = generation;
   const you = el("p", "you"), said = el("span", "words", "…");
   you.append(el("span", "label", label), said);
   const reply = el("p", "sift");
   add(you);
+  lastBubble = you; lastReply = reply;
+  let unfinished = false;
   controller = new AbortController();
   try {
     const response = await request(controller.signal);
@@ -315,7 +347,8 @@ async function converse(label, request) {
         const event = JSON.parse(buffer.slice(0, line)); buffer = buffer.slice(line + 1);
         if (mine !== generation) continue;
         if (event.type === "heard") {
-          if (event.text) { said.textContent = event.text; resumable = null; }
+          if (event.unfinished) { said.textContent = event.text + " …"; pending = { text: event.text, count: count + 1, bubble: you }; unfinished = true; }
+          else if (event.text) { said.textContent = event.text; heardNow = event.text; resumable = null; }
           else {
             you.remove();
             // Nothing real was said: if that cut it off, carry on where it stopped.
@@ -323,29 +356,51 @@ async function converse(label, request) {
           }
         }
         else if (event.type === "text") { if (!reply.isConnected) add(reply); reply.textContent = event.text; }
-        else if (event.type === "audio") { spoke = true; speak(event.data); }
+        else if (event.type === "audio") { spoke = true; replyStarted = true; speak(event.data); }
         else if (event.type === "error") add(el("p", "note", event.message));
         else if (event.type === "end") { endAfterSpeech = true; }
       }
     }
+    if (unfinished) return true; // send() keeps listening for the rest
     if (endAfterSpeech && !spoke && !playing) { endAfterSpeech = false; end("Bye. Tap to talk again."); }
-    else if (on && mine === generation && !spoke && !playing) listen();
+    else if (on && mine === generation && !spoke && !playing) muted ? set("muted") : listen();
   } catch (error) {
     if (error.name !== "AbortError") add(el("p", "note", error.message));
-    if (on && phase === "thinking") listen();
+    if (on && phase === "thinking") muted ? set("muted") : listen();
   }
 }
+
+/** The header chip also says when a session is still working in the background. */
+function chipWork() {
+  const busy = [...working.values()];
+  const base = { off: "Ready", muted: "Not listening", listening: "Listening", hearing: "Hearing you", thinking: "Thinking", speaking: "Speaking" }[phase] ?? "";
+  chip.textContent = busy.length ? `${base} · ${busy.length === 1 ? busy[0] + " working" : busy.length + " working"}` : base;
+}
+const elapsed = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`; };
+const shortTask = (task) => { const t = task.replace(/^\(.*?\)\s*/, "").replace(/^(jon|he|she|they)\s+(says|asks|wants)[:,]?\s*/i, ""); return t.length > 110 ? t.slice(0, 107).trimEnd() + "…" : t; };
+setInterval(() => cards.forEach((card, id) => { if (card.dataset.started && card.classList.contains("running")) card.querySelector(".time").textContent = elapsed(Date.now() - Number(card.dataset.started)); }), 1000);
 
 // ---- Background work from the worker session: cards that update, and news spoken when ready.
 const cards = new Map();
 function showJob(job) {
   let card = cards.get(job.id);
-  if (!card) { card = add(el("div", "job")); card.append(el("div", "head"), el("div", "title", job.task), el("ul", "")); cards.set(job.id, card); }
+  if (!card) {
+    card = add(el("div", "job"));
+    const head = el("div", "head"); head.append(el("span", "who"), el("span", "time"));
+    card.append(head, el("div", "title"), el("ul", ""));
+    cards.set(job.id, card);
+  }
+  if (job.status === "cancelled") { card.remove(); cards.delete(job.id); working.delete(job.id); chipWork(); return; }
   card.className = `job ${job.status}`;
-  const who = job.to ?? "the worker";
-  card.querySelector(".head").textContent = { queued: `Waiting for ${who}`, running: `Asked ${who}`, done: `${who[0].toUpperCase()}${who.slice(1)} answered`, failed: `${who[0].toUpperCase()}${who.slice(1)} didn't finish` }[job.status] ?? job.status;
-  const list = card.querySelector("ul");
-  list.replaceChildren(...job.steps.filter((s) => s !== "Thinking").map((s) => el("li", "", s)));
+  card.dataset.started = job.started ?? "";
+  const who = job.to ?? "the worker", Who = who[0].toUpperCase() + who.slice(1);
+  card.querySelector(".who").textContent = { queued: `Waiting for ${who}`, running: `Asked ${who}`, done: `${Who} answered`, failed: `${Who} didn't finish` }[job.status] ?? job.status;
+  if (job.status !== "running") card.querySelector(".time").textContent = "";
+  const title = card.querySelector(".title");
+  title.textContent = shortTask(job.task); title.title = job.task;
+  card.querySelector("ul").replaceChildren(...job.steps.filter((s) => s !== "Thinking").slice(-2).map((s) => el("li", "", s)));
+  if (job.status === "running" || job.status === "queued") working.set(job.id, Who); else working.delete(job.id);
+  chipWork();
 }
 const events = new EventSource("/api/events");
 events.onmessage = (message) => {
@@ -368,6 +423,7 @@ form.addEventListener("submit", (event) => {
   const text = typed.value.trim();
   if (!text) return;
   typed.value = ""; sendButton.disabled = true;
+  pending?.bubble?.remove(); pending = null; // typing starts a fresh question
   unlockPlayer(); // the send tap lets the reply play
   hush(); controller?.abort();
   if (on) set("thinking");
@@ -375,13 +431,14 @@ form.addEventListener("submit", (event) => {
   converse("You typed", (signal) => fetch("/api/text", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }), signal }));
 });
 
-// The orb never hangs up by accident: a tap interrupts, or sends what you're saying. "End" or "bye" ends.
+// Tap in and out: the orb switches listening on and off; the conversation carries on until "End" or bye.
 button.addEventListener("click", () => {
-  if (!on) begin().catch((e) => end("Microphone unavailable: " + e.message));
-  else if (phase === "speaking" || phase === "thinking") { hush(); controller?.abort(); listen(); graceUsed = true; set("listening", "Go ahead, I'm listening"); }
-  else if (phase === "hearing") send(); // you're done: send now instead of waiting for the pause
-  else if (Date.now() - spokeUntil < TAP_GRACE && !graceUsed) { graceUsed = true; set("listening", "Go ahead, I'm listening. Tap again to stop"); } // it had just stopped; you meant to cut in
-  else end("Stopped. Tap to talk again.");
+  if (!on) { muted = false; begin().catch((e) => end("Microphone unavailable: " + e.message)); return; }
+  if (phase === "hearing") { muted = true; send(); return; } // you're done: send it, and stop listening
+  if (phase === "listening") { muted = true; try { recorder?.state === "recording" && (recorder.ondataavailable = null, recorder.stop()); } catch {} set("muted"); return; }
+  muted = false; // muted, thinking or speaking: listen now (interrupting anything it's saying)
+  if (phase === "speaking" || phase === "thinking") { hush(); controller?.abort(); }
+  listen(); set("listening", "Go ahead, I'm listening");
 });
 $("endChat").addEventListener("click", () => end("Ended. Tap to talk again."));
 set("off");
