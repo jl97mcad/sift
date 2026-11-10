@@ -6,6 +6,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0b0c0e">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="icon" href="/icon-192.png">
 <title>Sift</title>
 <style>
   :root {
@@ -64,37 +67,48 @@
   .reply:empty { display: none; }
   .note { color: var(--muted); font-size: 14px; margin: 0; }
 
+  /* Bottom: the orb floats over one frosted dock that holds the text box. */
   footer {
-    position: relative; display: flex; flex-direction: column; align-items: center; gap: 10px;
-    padding: 14px 20px calc(env(safe-area-inset-bottom) + 18px);
+    position: relative; display: flex; justify-content: center;
+    padding: 8px 12px calc(env(safe-area-inset-bottom) + 10px);
+    background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--bg) 85%, transparent) 30%);
   }
   #talk { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
-    position: relative; width: 84px; height: 84px; border: 0; border-radius: 50%; padding: 0; cursor: pointer;
+    position: relative; flex: none; width: 48px; height: 48px; border: 0; border-radius: 50%; padding: 0; cursor: pointer;
     background: transparent; touch-action: manipulation; -webkit-tap-highlight-color: transparent;
   }
   #talk:focus-visible { outline: 3px solid var(--green); outline-offset: 6px; }
   .orb, .halo { position: absolute; inset: 0; border-radius: 50%; }
+  /* A soft orb: three blurred colour blobs drifting inside a circle, no hard edges. */
   .orb {
-    background:
-      radial-gradient(circle at 35% 30%, rgba(255,255,255,.55), transparent 42%),
-      conic-gradient(from var(--turn, 0deg), var(--violet), var(--mint), var(--green), var(--violet));
-    box-shadow: 0 10px 40px -8px color-mix(in srgb, var(--glow, var(--violet)) 70%, transparent);
-    animation: turn 9s linear infinite, breathe 4s ease-in-out infinite;
-    transform: scale(calc(1 + var(--level) * .22)); transition: transform .08s ease-out;
+    overflow: hidden; isolation: isolate; background: #16122a;
+    box-shadow: 0 12px 40px -10px color-mix(in srgb, var(--glow, var(--violet)) 75%, transparent), inset 0 0 0 1px rgba(255,255,255,.08);
+    transform: scale(calc(1 + var(--level) * .2)); transition: transform .08s ease-out, box-shadow .6s;
   }
+  .orb i { position: absolute; width: 85%; height: 85%; border-radius: 50%; filter: blur(8px); mix-blend-mode: screen; opacity: .95;
+    animation: var(--drift-time, 9s) ease-in-out infinite alternate; }
+  .orb i:nth-child(1) { background: var(--violet); top: -18%; left: -14%; animation-name: drift1; }
+  .orb i:nth-child(2) { background: var(--mint); bottom: -20%; right: -16%; animation-name: drift2; }
+  .orb i:nth-child(3) { background: var(--green); top: 30%; left: 20%; width: 60%; height: 60%; opacity: .7; animation-name: drift3; }
+  .orb::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(circle at 32% 26%, rgba(255,255,255,.45), transparent 38%); }
   .halo { border: 2px solid color-mix(in srgb, var(--glow, var(--violet)) 60%, transparent); opacity: 0; }
+  .dock { display: flex; align-items: center; gap: 10px; width: min(100%, 560px); padding: 6px; border-radius: 30px; background: rgba(255,255,255,.05);
+    border: 1px solid rgba(255,255,255,.08); backdrop-filter: blur(20px) saturate(1.4); -webkit-backdrop-filter: blur(20px) saturate(1.4); }
   #hint { font-size: 13px; color: var(--muted); min-height: 1.5em; text-align: center; }
 
   body.listening { --glow: var(--green); }
-  body.listening .orb { animation: turn 3s linear infinite; }
+  body.listening { --drift-time: 3s; }
   body.listening .halo { animation: ripple 1.6s ease-out infinite; }
   body.waiting { --glow: var(--mint); }
-  body.waiting .orb { animation: turn 1.4s linear infinite, breathe 1.4s ease-in-out infinite; }
+  body.waiting { --drift-time: 1.6s; }
   body.speaking { --glow: var(--violet); }
-  body.speaking .orb { animation: turn 4s linear infinite, talkpulse .5s ease-in-out infinite alternate; }
+  body.speaking { --drift-time: 2.4s; }
+  body.speaking .orb { animation: talkpulse .5s ease-in-out infinite alternate; }
 
   @property --turn { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
-  @keyframes turn { to { --turn: 360deg; } }
+  @keyframes drift1 { to { transform: translate(28%, 22%) scale(1.1); } }
+  @keyframes drift2 { to { transform: translate(-26%, -20%) scale(.92); } }
+  @keyframes drift3 { to { transform: translate(-30%, 18%) scale(1.15); } }
   @keyframes breathe { 50% { filter: brightness(1.12) saturate(1.15); } }
   @keyframes talkpulse { to { transform: scale(1.07); } }
   @keyframes ripple { from { opacity: .7; transform: scale(1); } to { opacity: 0; transform: scale(1.6); } }
@@ -116,9 +130,11 @@
   .job li::before { content: "✓"; color: var(--mint); font-weight: 700; width: 12px; }
   .job.running li:last-child::before { content: ""; width: 9px; height: 9px; border-radius: 50%; border: 2px solid color-mix(in srgb, var(--mint) 35%, transparent); border-top-color: var(--mint); animation: spin .8s linear infinite; }
   .you .label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 2px; letter-spacing: .02em; }
-  #endChat { border: 1px solid var(--line); background: transparent; color: var(--muted); font: inherit; font-size: 13px; padding: 6px 14px; border-radius: 999px; cursor: pointer; }
+  header .top { display: flex; gap: 8px; align-items: center; }
+  #endChat { border: 1px solid var(--line); background: transparent; color: var(--muted); font: inherit; font-size: 12px; padding: 4px 12px; border-radius: 999px; cursor: pointer; }
   #endChat:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
-  form#ask { width: min(100%, 560px); display: flex; gap: 8px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 6px 6px 6px 16px; }
+  form#ask { flex: 1; min-width: 0; display: flex; gap: 8px; align-items: center; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   form#ask input { flex: 1; min-width: 0; background: transparent; border: 0; color: var(--text); font: inherit; font-size: 16px; outline: none; }
   form#ask input::placeholder { color: var(--muted); }
   form#ask button { width: 34px; height: 34px; border-radius: 50%; border: 0; background: var(--text); color: var(--bg); font-size: 16px; cursor: pointer; }
@@ -127,15 +143,16 @@
 </style>
 </head>
 <body>
-<header><h1 id="name">Sift</h1><span id="chip">Ready</span></header>
+<header><h1 id="name">Sift</h1><div class="top"><span id="chip">Ready</span><button id="endChat" type="button" hidden aria-label="End the conversation">End</button></div></header>
 <main id="thread" aria-live="polite">
-  <div id="empty"><strong>Just talk</strong>Tap the orb once. I'll listen, answer, and listen again.<br>Talk over me to interrupt. Say bye or tap again to stop.</div>
+  <div id="empty"><strong>Just talk</strong>Tap the orb to talk. Tap it again to pause listening.<br>Talk over me to interrupt, or type instead.</div>
 </main>
 <footer>
-  <button id="talk" aria-label="Start talking"><span class="halo"></span><span class="orb"></span></button>
-  <div id="hint" role="status">Tap to start</div>
-  <button id="endChat" type="button" hidden>End conversation</button>
-  <form id="ask" autocomplete="off"><input id="typed" placeholder="Or type to ask anything" aria-label="Type a question"><button aria-label="Send" disabled>↑</button></form>
+  <div class="dock">
+    <button id="talk" aria-label="Start talking"><span class="halo"></span><span class="orb"><i></i><i></i><i></i></span></button>
+    <form id="ask" autocomplete="off"><input id="typed" aria-label="Type a question" aria-describedby="hint"><button aria-label="Send" disabled>↑</button></form>
+  </div>
+  <div id="hint" class="sr" role="status">Tap to start</div>
 </footer>
 <script>
 const $ = (id) => document.getElementById(id);
@@ -157,6 +174,7 @@ let turnCount = 0, carried = 0, heardNow = "", replyStarted = false, working = n
 
 function set(next, text) {
   phase = next;
+  queueMicrotask(() => ($("typed").placeholder = hint.textContent || "Type instead"));
   setTimeout(chipWork, 0);
   document.body.className = { off: "idle", muted: "idle", listening: "listening", hearing: "listening", thinking: "waiting", speaking: "speaking" }[next];
   chip.textContent = { off: "Ready", muted: "Not listening", listening: "Listening", hearing: "Hearing you", thinking: "Thinking", speaking: "Speaking" }[next];

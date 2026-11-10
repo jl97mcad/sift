@@ -129,6 +129,54 @@ function needsQueue() {
     (error, stdout) => resolve(error ? `The needs queue couldn't be read: ${error.message}` : (stdout.trim() || "Nothing is waiting.").slice(0, 3000))));
 }
 
+// ---- Reading directly: answers in seconds, without asking another session.
+const daemonsOf = () => [...new Set(workersOf(config).map((w) => w.url).filter(Boolean))];
+const titleOf = (a) => a.title ?? a.name ?? "";
+
+/** Live sessions on every configured daemon: title, status, seat. */
+async function sessions() {
+  const lines = [];
+  for (const url of daemonsOf()) {
+    try {
+      const client = await daemon(url);
+      const { entries } = await client.agents.list();
+      for (const a of entries.map((e) => e.agent)) {
+        if (a.status === "closed" || a.archivedAt || /retired/i.test(titleOf(a))) continue;
+        lines.push(`${titleOf(a).slice(0, 90)} | ${a.status}${a.labels?.seat ? ` | seat ${a.labels.seat}` : ""}`);
+      }
+    } catch (error) { lines.push(`(couldn't read ${url.replace(/\/\/.*@/, "//")}: ${error.message})`); }
+  }
+  return lines.length ? lines.slice(0, 80).join("\n") : "No live sessions.";
+}
+
+/** The latest prompts and replies of the session whose title or seat best matches the name. */
+async function readSession({ name }) {
+  const want = String(name ?? "").toLowerCase().trim();
+  if (!want) return "Say which session to read.";
+  for (const url of daemonsOf()) {
+    try {
+      const client = await daemon(url);
+      const { entries } = await client.agents.list();
+      const live = entries.map((e) => e.agent).filter((a) => a.status !== "closed" && !a.archivedAt);
+      const match = live.find((a) => a.labels?.seat === want) ?? live.find((a) => titleOf(a).toLowerCase().includes(want));
+      if (!match) continue;
+      const page = await client.agents.ref(match.id).timeline.refetch({ direction: "tail", limit: 60, projection: "projected" });
+      const said = page.entries.map((e) => e.item).filter((i) => (i.type === "assistant_message" || i.type === "user_message") && i.text)
+        .slice(-6).map((i) => `${i.type === "user_message" ? "Asked" : "Said"}: ${i.text.slice(0, 900)}`);
+      return `${titleOf(match)} (${match.status})\n${said.join("\n") || "Nothing said yet."}`;
+    } catch (error) { console.error("read session", error.message); }
+  }
+  return `No live session matches "${name}".`;
+}
+
+/** A configured read-only source (a file or command), e.g. the god session's focus list. */
+function readSource({ name }) {
+  const source = (config.sources ?? []).find((s) => s.name.toLowerCase() === String(name ?? "").toLowerCase());
+  if (!source) return Promise.resolve(`No source called "${name}". Sources: ${(config.sources ?? []).map((s) => s.name).join(", ") || "none"}.`);
+  return new Promise((resolve) => execFile("/bin/sh", ["-c", source.command], { timeout: 15_000, maxBuffer: 1 << 20 },
+    (error, stdout) => resolve(error ? `Couldn't read ${source.name}: ${error.message}` : (stdout.trim() || "It's empty.").slice(-6000))));
+}
+
 function jobStatus() {
   if (!jobs.length) return "Nothing has been handed to a worker in this conversation.";
   return jobs.slice(-5).map((job) => {
@@ -264,7 +312,7 @@ async function turn(request, response, typed) {
       // The phone may have hung up already (it carried on talking): then nothing this turn starts may run.
       const abandon = () => started.forEach((job) => (job.cancelled = true));
       response.on("close", () => { if (!response.writableFinished) abandon(); });
-      await respond(config, history, heard, { delegate: (args) => {
+      await respond(config, history, heard, { sessions, read_session: readSession, read_source: readSource, delegate: (args) => {
         const before = jobs.at(-1);
         const reply = delegate(args, heard);
         const job = jobs.at(-1);
@@ -313,6 +361,14 @@ function send(response, status, payload, type = "application/json") {
 createServer(async (request, response) => {
   try {
     if (request.method === "GET" && request.url === "/") return send(response, 200, page, "text/html; charset=utf-8");
+    // Home-screen app: the manifest names it after the assistant (or "Voice" when it has no name).
+    if (request.method === "GET" && request.url === "/manifest.webmanifest") {
+      const manifest = JSON.parse(await readFile(new URL("./manifest.webmanifest", import.meta.url), "utf8"));
+      if (config.assistant) { manifest.name = config.assistant; manifest.short_name = config.assistant; }
+      return send(response, 200, JSON.stringify(manifest), "application/manifest+json");
+    }
+    const icon = request.method === "GET" && request.url.match(/^\/icon-(180|192|512)\.png$/);
+    if (icon) return send(response, 200, await readFile(new URL(`./icons/icon-${icon[1]}.png`, import.meta.url)), "image/png");
     if (request.method === "GET" && request.url === "/api/config") {
       return send(response, 200, { assistant: config.assistant ?? "", person: config.person, jobs: jobs.map(view) });
     }
