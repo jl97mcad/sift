@@ -11,6 +11,11 @@ Environment=OPENROUTER_KEY_FILE=/etc/sift-voice/openrouter-key
 Environment=BOT_TOOLS=http://127.0.0.1:8773
 Restart=always
 RestartSec=5
+# The call's audio runs on one thread; keep it ahead of other jobs when the shared VPS is busy
+# (10 Nov: load 7-10, steal 19-47% made speech choppy). Same values as the sift-voice.service drop-in.
+CPUWeight=800
+IOWeight=500
+Nice=-10
 
 [Install]
 WantedBy=multi-user.target
