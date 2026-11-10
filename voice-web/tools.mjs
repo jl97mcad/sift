@@ -21,7 +21,7 @@ export function words(line) {
   let word = null, quote = null;
   for (const ch of String(line ?? "")) {
     if (quote) { if (ch === quote) quote = null; else word += ch; continue; }
-    if (ch === "'" || ch === '"') { quote = ch; word ??= ""; continue; }
+    if ((ch === "'" || ch === '"') && word === null) { quote = ch; word = ""; continue; } // only at a word's start: "don't" stays one word
     if (/\s/.test(ch)) { if (word !== null) out.push(word), (word = null); continue; }
     word = (word ?? "") + ch;
   }

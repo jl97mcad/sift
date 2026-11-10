@@ -46,7 +46,7 @@ export function toolsFor(config) {
 }
 
 export function systemPrompt(config) {
-  const now = new Date().toLocaleString("en-GB", { timeZone: config.timezone, dateStyle: "full", timeStyle: "short" });
+  const now = new Date().toLocaleString("en-GB", { timeZone: config.timezone || config.phoneTimezone, dateStyle: "full", timeStyle: "short" });
   const me = config.assistant ? `You are ${config.assistant}, ${config.person}'s` : `You are ${config.person}'s`;
   const workers = workersOf(config).map((w) => `- ${w.name}: ${w.use}${w.handoff ? ` (say something like "${w.handoff}")` : ""}`).join("\n");
   return `${me} voice assistant: the front door for everything they ask by voice. It is ${now} where they are.
@@ -62,7 +62,7 @@ How to talk:
 - Don't end with offers like "anything else?" or "want me to check?" unless a decision is genuinely theirs to make.
 
 How to work:
-- Their words reach you through speech recognition, which mishears names. Match what you hear to the names you know: "John 4122" is the plan JON-4122, "Parseo" or "Parcel" is Paseo.
+- Their words reach you through speech recognition, which mishears names. Match what you hear to the names you know: session titles, plan numbers, and Paseo (heard as "Parseo" or "Parcel").${config.hearing ? ` ${config.hearing}` : ""}
 - Look things up yourself first: sessions, read_session${(config.sources ?? []).length ? ", read_source" : ""} and needs_queue answer in seconds. Use them for "what's X doing", "where is Y up to", "what's on the focus list". Never say you can't see something you can read.
 ${Object.keys(hostsOf(config)).length ? `- The paseo tool runs the Paseo CLI (hosts: ${Object.keys(hostsOf(config)).join(", ")}): find a session with ls, see what it's doing with logs, message one with send. Ids come from ls; never guess one.\n` : ""}${skills(config).length ? `- Skills are short how-tos. Before a request that matches one, load it with the skill tool once per conversation, then follow it:\n${skills(config).map((k) => `  - ${k.name}: ${k.description}`).join("\n")}\n` : ""}- Delegate only for actions, or when reading isn't enough to answer: call delegate at once with the task in their words, choosing the session that fits. In the same turn, say naturally who you've asked and that you'll come back to them, for example "Let me look deeper into that" or "I'll ask Control". If it may take a while, say roughly how long.
 - Never say something is done, or state facts about their work you haven't read or been told. Never claim to have something you don't: if a session's reply is in the conversation, use it; if not, read it. You may say what hasn't happened yet.

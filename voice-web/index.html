@@ -9,7 +9,7 @@
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icon-180.png">
 <link rel="icon" href="/icon-192.png">
-<title>Sift</title>
+<title>Voice</title>
 <style>
   :root {
     color-scheme: dark;
@@ -143,7 +143,7 @@
 </style>
 </head>
 <body>
-<header><h1 id="name">Sift</h1><div class="top"><span id="chip">Ready</span><button id="endChat" type="button" hidden aria-label="End the conversation">End</button></div></header>
+<header><h1 id="name"></h1><div class="top"><span id="chip">Ready</span><button id="endChat" type="button" hidden aria-label="End the conversation">End</button></div></header>
 <main id="thread" aria-live="polite">
   <div id="empty"><strong>Just talk</strong>Tap the orb to start. Tap it again to pause listening.<br>Talk over me to interrupt, or type instead.</div>
 </main>
@@ -358,8 +358,8 @@ events.onmessage = (message) => {
     }
   }
 };
-fetch("/api/config").then((r) => r.json()).then((c) => {
-  $("name").textContent = c.assistant; document.title = c.assistant || "Voice"; c.jobs.forEach(showJob);
+fetch(`/api/config?tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone ?? "")}`).then((r) => r.json()).then((c) => {
+  $("name").textContent = c.title; document.title = c.title; c.jobs.forEach(showJob);
 });
 
 // ---- Typing: goes into the same call (one is started, listening paused, if none is open).

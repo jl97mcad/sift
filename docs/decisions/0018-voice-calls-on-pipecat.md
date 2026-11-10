@@ -36,3 +36,15 @@ at the same tailnet address, able to use the Paseo CLI, and guided by written sk
 - Each open call holds about 260 MB and a third of a core on the VPS; an idle call hangs up after
   5 minutes of silence.
 - The old `/api/turn` and `/api/text` routes remain in the server but the page no longer uses them.
+
+## Running one for someone else (10 Nov)
+
+Everything person-specific is in `config.json`:
+- `title`: the page heading and home-screen name. It defaults to `assistant`, then "Voice".
+- `assistant`: the name the assistant uses for itself; it may be empty.
+- `hearing`: a line about names that speech recognition mishears, such as their plan prefix.
+- `workers`: each worker is found by `seat` label or by `title`, a regex on the session title.
+- `paseo.hosts`, `needs.command` and `sources`.
+- `timezone`: if it isn't set, the phone's timezone is used.
+
+Run both services as that person's user, with their own OpenRouter key file and their own tailnet.
