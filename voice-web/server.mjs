@@ -15,6 +15,7 @@ import { respond, summarise, systemPrompt, toolsFor, workersOf } from "./front.m
 import { paseo, skill } from "./tools.mjs";
 import { contextBlock, digestSession, digestSessions } from "./digest.mjs";
 import { answerAsk, answering } from "./asks.mjs";
+import { look, reading, READ_HANDLERS } from "./reader.mjs";
 import { recall, recentMemory, remembering, summariseCall, writeMemory } from "./memory.mjs";
 
 const PORT = Number(process.env.PORT ?? 8771);
@@ -87,6 +88,7 @@ async function runCommand(worker, prompt) {
 
 const history = [];
 const jobs = [];
+const readers = reading(config) ? READ_HANDLERS(config) : {}; // read-only; the same ones the background look uses
 const listeners = new Set();
 let conversation = Promise.resolve(); // one turn or job summary at a time touches the history
 const queues = new Map(); // each worker session takes one task at a time
@@ -151,6 +153,35 @@ function delegate({ task, to, plan }, heard) {
   const key = worker.lead ? `lead:${plan}` : worker.name;
   queues.set(key, (queues.get(key) ?? Promise.resolve()).then(() => run(job)).catch((error) => console.error("job failed", error)));
   return `Started: ${job.to} is on it. Its result will be spoken when it's ready.`;
+}
+
+/** Sift's own short read in the background: read-only tools on a cheap model, spoken like any finished job. */
+function lookInto({ question }, heard) {
+  const job = { id: `job-${Date.now()}`, task: String(question ?? "").trim() || heard, to: "my own look", worker: null, status: "running", steps: [], reply: "", started: Date.now() };
+  jobs.push(job);
+  jobs.splice(0, Math.max(0, jobs.length - 20));
+  broadcast({ type: "job", job: view(job) });
+  const named = ["sessions", "read_session", "read_source", "recall"];
+  const handlers = { sessions, read_session: readSession, read_source: readSource, recall: (args) => recall(config, args) };
+  const tools = toolsFor(config).filter((t) => named.includes(t.function.name));
+  let lastNews = 0;
+  (async () => {
+    try {
+      job.reply = await look(config, job.task, { handlers, tools }, async (step) => {
+        job.steps.push(step);
+        broadcast({ type: "job", job: view(job) });
+        if (Date.now() - lastNews > 12_000) { lastNews = Date.now(); await tell(`I'm ${step}.`).catch(() => {}); } // the news path, tapering
+      });
+      job.status = "done";
+    } catch (error) {
+      console.error(`look failed: ${error.message}`);
+      job.status = "failed";
+      job.reply = "The look failed.";
+    }
+    broadcast({ type: "job", job: view(job) });
+    await announce(job);
+  })();
+  return "Started: I'm looking into it. The answer will be spoken when it's ready.";
 }
 
 /** The open questions waiting for the person, from the configured command (prints text or JSON). */
@@ -437,7 +468,7 @@ async function turn(request, response, typed) {
       // The phone may have hung up already (it carried on talking): then nothing this turn starts may run.
       const abandon = () => started.forEach((job) => (job.cancelled = true));
       response.on("close", () => { if (!response.writableFinished) abandon(); });
-      await respond(config, history, heard, { sessions, read_session: readSession, read_source: readSource, delegate: (args) => {
+      await respond(config, history, heard, { ...readers, look_into: (args) => lookInto(args, heard), sessions, read_session: readSession, read_source: readSource, delegate: (args) => {
         const before = jobs.at(-1);
         const reply = delegate(args, heard);
         const job = jobs.at(-1);
@@ -446,7 +477,7 @@ async function turn(request, response, typed) {
       }, job_status: jobStatus, needs_queue: needsQueue, stay_quiet: () => "Staying quiet.",
         handoffLine: (calls) => {
           const workers = workersOf(config);
-          const lines = calls.map(({ to }) => workers.find((w) => w.name === to)?.handoff ?? `I'll ask ${to ?? "the team"}`);
+          const lines = calls.map(({ to, tool }) => tool === "look_into" ? "Let me dig into that" : workers.find((w) => w.name === to)?.handoff ?? `I'll ask ${to ?? "the team"}`);
           return `${[...new Set(lines)].join(", and ")}. I'll come back to you when I hear.`;
         },
         paseo: (args) => paseo(config, args, open), skill: (args) => skill(config, args),
@@ -545,6 +576,7 @@ for (const address of Object.values(config.paseo?.hosts ?? {})) open(address).ca
 
 // ---- The Pipecat bot's side door: tools, its setup and the news feed. 127.0.0.1 only, never on the tailnet.
 const botTools = {
+  ...readers, look_into: (args) => lookInto(args, args?.question ?? ""),
   sessions, read_session: readSession, read_source: readSource, needs_queue: needsQueue, job_status: jobStatus,
   delegate: (args) => delegate(args, args?.task ?? ""), paseo: (args) => paseo(config, args, open), skill: (args) => skill(config, args),
   catch_up: catchUp, answer_ask: answerAskTool, recall: (args) => recall(config, args),

@@ -206,3 +206,53 @@ import { join } from "node:path";
   assert.ok((await recentMemory(cfg, Date.parse("2026-03-30T00:30:00+01:00"))).includes("Yesterday:\n## Call at 13:00\n- The day before the clocks changed."));
   console.log("memory ok");
 }
+
+// Deeper reading: read-only tools; the God session folder is never reachable; secrets and personal fields never come out.
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { clean, github, isGodSession, linearPlan, look, vault, web } from "./reader.mjs";
+import { toolsFor } from "./front.mjs";
+{
+  for (const bad of ["God session/STATE.md", "Notes/God session/x.md", "/srv/vault/Notes/god SESSION/y.md", "Notes/GOD%20SESSION/y.md", "Notes\\God session\\y.md",
+    "Notes/God  session/y.md", "Notes/god_session/y.md", "Notes/God session/y.md", "Notes/Ｇod session/y.md", "Notes/God%2520session/y.md"]) assert.ok(isGodSession(bad), bad);
+  assert.ok(!isGodSession("Notes/2026-11-03 Colin accountability check.md"));
+  const root = mkdtempSync(join(tmpdir(), "vault-"));
+  mkdirSync(join(root, "Notes/God session"), { recursive: true });
+  writeFileSync(join(root, "Notes/ok.md"), "A note. Call +44 7700 900123 or jon@example.com, key sk-or-v1-abcdefghijklmnop.");
+  writeFileSync(join(root, "Notes/God session/STATE.md"), "SECRET GOD");
+  symlinkSync(join(root, "Notes/God session"), join(root, "Notes/link"));
+  symlinkSync("/etc/passwd", join(root, "Notes/out.md"));
+  const config = { reader: { vault: { root, url: "http://127.0.0.1:1", tokenFile: "/nonexistent" } } };
+  const note = await vault(config, { action: "read", path: "Notes/ok.md" });
+  assert.ok(note.startsWith("A note.") && !/7700|example\.com|sk-or/.test(note), note);
+  for (const path of ["Notes/God session/STATE.md", "Notes/god session/state.md", "/srv/vault/Notes/God session/STATE.md", `${root}/Notes/God session/STATE.md`, "Notes/link/STATE.md", "Notes/out.md", "../etc/passwd", "Notes/ok.md/../God session/STATE.md", "Notes/God%20session/STATE.md"]) {
+    assert.ok(!(await vault(config, { action: "read", path })).includes("GOD"), path);
+    assert.ok(/isn't available|No such note/.test(await vault(config, { action: "read", path })), path);
+  }
+  // Search hits from the God session folder are dropped, whatever the search returned.
+  const real = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ hits: [{ path: "/srv/vault/Notes/God session/x.md", lines: "L1", snippet: "hidden" }, { path: "/srv/vault/Notes/a.md", lines: "L2", snippet: "kept" }] }) });
+  writeFileSync(join(root, "token"), "t");
+  const found = await vault({ reader: { vault: { root, url: "http://x", tokenFile: join(root, "token") } } }, { action: "search", query: "x" });
+  globalThis.fetch = real;
+  assert.ok(found.includes("kept") && !found.includes("hidden") && !found.includes("God"), found);
+}
+assert.equal(clean("mail jon@outlandishdigital.us, ring 07700 900 123, token: abc and Bearer abcdefghijklmnop, ghp_abcdefghijklmnop"), "mail [email], ring [number], token: [redacted] and Bearer [redacted], [redacted]");
+assert.equal(clean("Updated 2026-11-10, plan JON-4220, 12 PRs"), "Updated 2026-11-10, plan JON-4220, 12 PRs");
+// Read-only by construction: Linear refuses anything but a query, GitHub only list, view and checks on a well-formed repo, the web refuses private addresses.
+assert.match(await linearPlan({ reader: {} }, { id: "not a plan" }), /plan number/);
+assert.match(await github({ reader: { github: { repos: ["a/b"] } } }, { action: "merge", number: 1 }), /list, view or checks/);
+assert.match(await github({ reader: {} }, { action: "list", repo: "a/b; rm -rf /" }), /which repository/);
+assert.match(await github({ reader: {} }, { action: "view", repo: "a/b", number: "1; ls" }), /pull request number/);
+for (const url of ["http://127.0.0.1:8771/", "http://100.65.211.56:8788/v1/health", "http://169.254.169.254/latest/meta-data", "http://[::1]/", "file:///etc/passwd", "http://user:pw@example.com/"]) {
+  await assert.rejects(web({}, { action: "fetch", url }), /public|plain/, url);
+}
+{
+  const cfg = { person: "Alex", paseo: { hosts: {} }, workers: [{ name: "Control", use: "x" }] };
+  const names = (c) => toolsFor(c).map((t) => t.function.name);
+  assert.ok(!names(cfg).includes("look_into") && !names(cfg).includes("github"), "off unless config.reader is set");
+  assert.ok(["look_into", "plan", "plan_search", "github", "vault", "server_status", "web"].every((n) => names({ ...cfg, reader: {} }).includes(n)));
+  assert.match(toolsFor({ ...cfg, reader: {} }).find((t) => t.function.name === "delegate").function.description, /ACTION/);
+  // No tool the look can call writes: only the read set plus the server's own readers.
+  assert.equal(typeof look, "function");
+}
+console.log("reader ok");

@@ -3,12 +3,13 @@
 import { key } from "./speech.mjs";
 import { hostsOf, skills } from "./tools.mjs";
 import { answering } from "./asks.mjs";
+import { LOOK_TOOL, READ_TOOLS, reading } from "./reader.mjs";
 
 export const recalling = (config) => Boolean(config.memory?.dir || config.memory?.dejaCommand);
 
 const HISTORY = 30; // ponytail: messages kept in memory; one conversation per server, lost on restart
 // Tools whose result must be spoken in a second round; the others are fire-and-forget.
-const SPEAK_RESULT = new Set(["job_status", "needs_queue", "sessions", "read_session", "read_source", "paseo", "skill", "catch_up", "answer_ask", "recall"]);
+const SPEAK_RESULT = new Set(["job_status", "needs_queue", "sessions", "read_session", "read_source", "paseo", "skill", "catch_up", "answer_ask", "recall", "plan", "plan_search", "github", "vault", "server_status", "web"]);
 
 /** The people's workers, from config: `workers`, or the older single `worker`. */
 export function workersOf(config) {
@@ -20,11 +21,14 @@ export function toolsFor(config) {
   const hosts = Object.keys(hostsOf(config));
   const known = skills(config);
   return [
+    ...(reading(config) ? [...READ_TOOLS, LOOK_TOOL] : []),
     {
       type: "function",
       function: {
         name: "delegate",
-        description: "Hand a task to one of the person's worker sessions, in the background. They can read the person's work and act through their agents.",
+        description: reading(config)
+          ? "Hand an ACTION to one of the person's worker sessions, in the background: anything that writes, sends, merges, deploys or changes, plus Lark and Mac-only things. Never for reading or looking something up: read it yourself with your read tools or look_into."
+          : "Hand a task to one of the person's worker sessions, in the background. They can read the person's work and act through their agents.",
         parameters: {
           type: "object",
           properties: {
@@ -68,14 +72,20 @@ ${workers}
 
 How to talk:
 - Like a quick, warm colleague on the phone. One or two short sentences, at most about 40 words. Contractions. No lists, markdown, ids or links. Short answer first; detail only if asked.
-- Ask at most one question, and put it last.
+- Ask at most one question, and put it last.${reading(config) ? `
+- Keep it a conversation: answer the question first, in a breath, and let them steer. When an answer has more to it, give the headline and stop; they'll ask for the rest.
+- "That", "it", "the first one", "the other one": they mean the last plan, PR, note, session or topic you two touched, in this call. Work out which from the conversation and say its name once so they can correct you. Only ask which if two fit equally.
+- When a follow-up needs a fresh read, read it; don't answer from memory of an earlier result that may have changed.` : ""}
 - Vary your wording; never repeat the same opener twice in a row.
 - Don't end with offers like "anything else?" or "want me to check?" unless a decision is genuinely theirs to make.
 
-How to work:
+${reading(config) ? `You also read things yourself, read-only: plans (plan, plan_search), GitHub pull requests and their checks (github), their notes (vault), the server (server_status) and the web (web). For anything that needs several of these, or "look into that", call look_into: it reads in the background while you keep talking, and its answer is spoken when it's ready. Workers are for actions and the few things only they can reach.
+
+` : ""}How to work:
 - Their words reach you through speech recognition, which mishears names. Match what you hear to the names you know: session titles, plan numbers, and Paseo (heard as "Parseo" or "Parcel").${config.hearing ? ` ${config.hearing}` : ""}
 - If your instructions have an "Already read for this call" block, answer "what needs me", "what's running" (the list of sessions) and what's on any source it includes straight from it, with no tool call. What one session is doing or has said isn't in it: read that session. Don't call needs_queue or catch_up for these unless they ask for the latest or a refresh, or the block is more than about ten minutes old. It's a snapshot from the start of the call: when they ask for the latest or for detail, or the call has run a while, read again.
-- Otherwise look things up yourself first: sessions, read_session${(config.sources ?? []).length ? ", read_source" : ""} and needs_queue answer in seconds. Use them for "what's X doing", "where is Y up to", "what's on the focus list". Never say you can't see something you can read.
+${reading(config) ? `- Look things up yourself before handing anything off. A plan's state or comments: plan. Is a PR merged, are its checks green: github. Something in their notes: vault. How the server or a deploy is doing: server_status. A fact from outside: web. Anything bigger or needing a few of these: look_into, say in a few words what you're checking, and carry on. The vault's God session folder is never available to you (the god session itself you still read with read_session). Hand off only an action (anything that writes, sends, merges, deploys or changes), Lark, or something only their Mac can see.
+` : ""}- Otherwise look things up yourself first: sessions, read_session${(config.sources ?? []).length ? ", read_source" : ""} and needs_queue answer in seconds. Use them for "what's X doing", "where is Y up to", "what's on the focus list". Never say you can't see something you can read.
 ${config.filler ? `- Don't announce a lookup ("let me check"); call the tool straight away. A short "one sec" is spoken for you while it runs.\n` : ""}- Several lookups for one question: ask for them all in the same response, so they run at once.${config.preload ? ` For "catch me up" with fresh data, call catch_up once instead of several lookups.` : ""}
 ${Object.keys(hostsOf(config)).length ? `- The paseo tool runs the Paseo CLI (hosts: ${Object.keys(hostsOf(config)).join(", ")}): find a session with ls, see what it's doing with logs, message one with send. Ids come from ls; never guess one.\n` : ""}${skills(config).length ? `- Skills are short how-tos. Before a request that matches one, load it with the skill tool once per conversation, then follow it (never mention loading one):\n${skills(config).map((k) => `  - ${k.name}: ${k.description}`).join("\n")}\n` : ""}- Delegate only for actions, or when reading isn't enough to answer: call delegate at once with the task in their words, choosing the session that fits. In the same turn, say naturally who you've asked and that you'll come back to them, for example "Let me look deeper into that" or "I'll ask Control". If it may take a while, say roughly how long.
 - Never say something is done, or state facts about their work you haven't read or been told. Never claim to have something you don't: if a session's reply is in the conversation, use it; if not, read it. You may say what hasn't happened yet.
@@ -132,8 +142,8 @@ export async function respond(config, history, userText, handlers, onText, { too
     const names = calls.map((call) => call.function.name);
     if (names.includes("stay_quiet") || names.includes("end_conversation")) break;
     // A silent hand-off speaks its ready-made line now, instead of waiting on another model round.
-    if (!text && names.length && names.every((name) => name === "delegate") && handlers.handoffLine) {
-      const line = handlers.handoffLine(calls.map((call) => { try { return JSON.parse(call.function.arguments || "{}"); } catch { return {}; } }));
+    if (!text && names.length && names.every((name) => name === "delegate" || name === "look_into") && handlers.handoffLine) {
+      const line = handlers.handoffLine(calls.map((call) => { try { return { ...JSON.parse(call.function.arguments || "{}"), tool: call.function.name }; } catch { return { tool: call.function.name }; } }));
       onText(line);
       history.push({ role: "assistant", content: line });
       break;

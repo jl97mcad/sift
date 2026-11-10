@@ -5,6 +5,7 @@
     "person": "Jon",
     "timezone": "Europe/London",
     "language": "en",
+    "reader": {},
     "about": "Jon runs a small agency. His work runs through Paseo agent sessions on a box called main-box.",
     "frontModel": "deepseek/deepseek-v4.1-flash",
     "workers": [
@@ -77,6 +78,11 @@
     ],
     "sessions": "(the sessions fixture)",
     "job_status": "Nothing has been handed to a worker in this conversation.",
-    "delegate": "Started: it's on it. Its result will be spoken when it's ready."
+    "delegate": "Started: it's on it. Its result will be spoken when it's ready.",
+    "plan": [{"match": "4119", "result": "JON-4119: Shop header colour. State In Progress, updated 2026-11-10. Description: Make the header green for the Friday launch. Comment 2026-11-10: PR 88 is up, waiting on checks."}, {"match": ".", "result": "No plan with that number."}],
+    "github": [{"match": "view|checks", "result": "PR 88 'Shop header green': open, not draft, review required. Checks: build passed, lint passed, e2e failed (checkout.spec timed out)."}, {"match": ".", "result": "88 Shop header green (open, updated today); 85 Fix cart total (merged yesterday)"}],
+    "vault": [{"match": "colin", "result": "Notes/2026-11-03 Colin accountability check.md (L1-L16): A records check of Colin's work found most items closed or moving."}, {"match": ".", "result": "Nothing in the vault matches."}],
+    "server_status": "Load 1.2 0.9 0.8, up 500 h. Disk: / 387G 272G 71%. Services: sift-voice active, jon-board-runner active. main: ccf210f 2 hours ago Merge pull request 751.",
+    "web": "Node 24 is the current release line, per the Node.js release schedule."
   }
 }
