@@ -76,10 +76,11 @@ How to work:
  */
 export async function respond(config, history, userText, handlers, onText, { tools = true } = {}) {
   history.push({ role: "user", content: userText });
-  let quiet = false;
+  let quiet = false, spokeThisTurn = false;
   for (let round = 0; round < 4; round += 1) {
-    let gap = round > 0 && history.some((m, i) => i > 0 && m.role === "assistant" && m.content); // later rounds start a new sentence
+    let gap = spokeThisTurn; // a later round of this turn starts a new sentence
     const { text, calls } = await stream(config, history, (delta) => { onText(gap ? ` ${delta}` : delta); gap = false; }, tools);
+    if (text) spokeThisTurn = true;
     if (calls.some((call) => ["stay_quiet", "end_conversation"].includes(call.function.name))) quiet = true;
     if (!tools) { history.push({ role: "assistant", content: text }); break; } // no tools offered: never run any
     history.push({ role: "assistant", content: text || null, ...(calls.length ? { tool_calls: calls } : {}) });
