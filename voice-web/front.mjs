@@ -4,7 +4,7 @@ import { key } from "./speech.mjs";
 
 const HISTORY = 30; // ponytail: messages kept in memory; one conversation per server, lost on restart
 // Tools whose result must be spoken in a second round; the others are fire-and-forget.
-const SPEAK_RESULT = new Set(["job_status", "needs_queue"]);
+const SPEAK_RESULT = new Set(["job_status", "needs_queue", "sessions", "read_session", "read_source"]);
 
 /** The people's workers, from config: `workers`, or the older single `worker`. */
 export function workersOf(config) {
@@ -30,6 +30,9 @@ function toolsFor(config) {
         },
       },
     },
+    { type: "function", function: { name: "sessions", description: "List the person's live agent sessions on every daemon: title, status and seat. Fast.", parameters: { type: "object", properties: {} } } },
+    { type: "function", function: { name: "read_session", description: "Read the latest prompts and replies of one session, by its seat (control, god, voice) or words from its title (a plan number, a name). Fast.", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } } },
+    ...((config.sources ?? []).length ? [{ type: "function", function: { name: "read_source", description: `Read a source directly. ${(config.sources ?? []).map((s) => `${s.name}: ${s.use}`).join(". ")}`, parameters: { type: "object", properties: { name: { type: "string", enum: config.sources.map((s) => s.name) } }, required: ["name"] } } }] : []),
     { type: "function", function: { name: "job_status", description: "What the workers are doing now and what they've finished, with their replies.", parameters: { type: "object", properties: {} } } },
     { type: "function", function: { name: "needs_queue", description: "The open questions waiting for the person's answer, newest first.", parameters: { type: "object", properties: {} } } },
     { type: "function", function: { name: "stay_quiet", description: "Say nothing this turn: the words weren't meant for you (background talk, a cough, thinking aloud, a fragment).", parameters: { type: "object", properties: {} } } },
@@ -54,8 +57,9 @@ How to talk:
 - Don't end with offers like "anything else?" or "want me to check?" unless a decision is genuinely theirs to make.
 
 How to work:
-- Anything about their work, or any action: call delegate at once with the task in their words, choosing the session that fits. In the same turn, say naturally who you've asked and that you'll come back to them, for example "Let me look deeper into that" or "I'll ask Control". If it may take a while, say roughly how long.
-- Never say something is done, or state facts about their work, until a session's result is in. You may say what hasn't happened yet.
+- Look things up yourself first: sessions, read_session${(config.sources ?? []).length ? ", read_source" : ""} and needs_queue answer in seconds. Use them for "what's X doing", "where is Y up to", "what's on the focus list". Never say you can't see something you can read.
+- Delegate only for actions, or when reading isn't enough to answer: call delegate at once with the task in their words, choosing the session that fits. In the same turn, say naturally who you've asked and that you'll come back to them, for example "Let me look deeper into that" or "I'll ask Control". If it may take a while, say roughly how long.
+- Never say something is done, or state facts about their work you haven't read or been told. Never claim to have something you don't: if a session's reply is in the conversation, use it; if not, read it. You may say what hasn't happened yet.
 - "How's that going?": call job_status and say where it's up to in a sentence.
 - "What needs me?" or a catch-up: call needs_queue and give the most important one or two, then offer the rest.
 - Only bring up what they asked about, results of work they asked for, and the needs queue. Don't volunteer other news.
@@ -143,6 +147,7 @@ export async function summarise(config, history, job) {
     {}, (delta) => (spoken += delta), { tools: false }); // a summary must be spoken, never a tool call
   // Keep what was said, not the note: later turns must never read it as words the person said.
   const note = history.findIndex((message, index) => index >= at && message.role === "user" && String(message.content).startsWith("(System note"));
-  if (note >= 0) history.splice(note, 1, { role: "user", content: `(${job.to} finished: ${job.task})` });
+  // Keep the answer itself, so a follow-up ("what did you find?") is answered from it, never contradicted.
+  if (note >= 0) history.splice(note, 1, { role: "user", content: `(Not said by ${config.person}. ${job.to} finished "${job.task}" and replied: ${job.reply.slice(0, 2500) || "(nothing)"})` });
   return spoken;
 }

@@ -37,5 +37,12 @@
   ],
   "needs": {
     "command": ""
-  }
+  },
+  "sources": [
+    {
+      "name": "focus list",
+      "use": "The decision-maker's current focus list and priorities",
+      "command": "cat /path/to/focus-list.md"
+    }
+  ]
 }
