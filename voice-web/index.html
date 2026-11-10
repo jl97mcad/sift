@@ -265,8 +265,19 @@ async function regainMic() {
   try { micLevel = meter(fresh); } catch {}
   micLost = micTrack.muted;
 }
+// In the background a tab can't use the mic on a phone, and holding it starves any other tab's call.
+// So: let go of the mic when hidden, hang up after 2 minutes away, and take the mic back on return.
+let hiddenTimer = 0;
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible" && pc && (micLost || micTrack?.readyState === "ended")) regainMic().then(listenOrMute).catch(() => micPaused());
+  if (!pc) return;
+  if (document.visibilityState === "hidden") {
+    micStream?.getTracks().forEach((t) => t.stop());
+    micLost = true;
+    hiddenTimer = setTimeout(() => pc && hangUp("Paused while you were away. Tap to talk again."), 120_000);
+    return;
+  }
+  clearTimeout(hiddenTimer);
+  if (micLost || micTrack?.readyState === "ended") regainMic().then(listenOrMute).catch(() => micPaused());
 });
 
 // ---- What the call tells us
