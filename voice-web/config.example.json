@@ -4,7 +4,7 @@
   "timezone": "Europe/London",
   "language": "en",
   "about": "One or two sentences about the person and how their work runs.",
-  "frontModel": "anthropic/claude-haiku-5.5",
+  "frontModel": "deepseek/deepseek-v4.1-flash",
   "workers": [
     {
       "name": "Control",
