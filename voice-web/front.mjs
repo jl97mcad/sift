@@ -76,9 +76,11 @@ How to work:
  */
 export async function respond(config, history, userText, handlers, onText, { tools = true } = {}) {
   history.push({ role: "user", content: userText });
-  let quiet = false;
+  let quiet = false, spokeThisTurn = false;
   for (let round = 0; round < 4; round += 1) {
-    const { text, calls } = await stream(config, history, onText, tools);
+    let gap = spokeThisTurn; // a later round of this turn starts a new sentence
+    const { text, calls } = await stream(config, history, (delta) => { onText(gap ? ` ${delta}` : delta); gap = false; }, tools);
+    if (text) spokeThisTurn = true;
     if (calls.some((call) => ["stay_quiet", "end_conversation"].includes(call.function.name))) quiet = true;
     if (!tools) { history.push({ role: "assistant", content: text }); break; } // no tools offered: never run any
     history.push({ role: "assistant", content: text || null, ...(calls.length ? { tool_calls: calls } : {}) });
@@ -117,7 +119,8 @@ async function stream(config, history, onText, tools = true) {
     method: "POST",
     headers: { Authorization: `Bearer ${await key()}`, "Content-Type": "application/json", "X-Title": config.assistant || "Voice assistant" },
     body: JSON.stringify({
-      model: config.frontModel, stream: true, max_tokens: 300, ...(tools ? { tools: toolsFor(config) } : {}),
+      // No hidden reasoning: it ate the token budget after long lookups and left nothing to say.
+      model: config.frontModel, stream: true, max_tokens: 800, reasoning: { enabled: false }, ...(tools ? { tools: toolsFor(config) } : {}),
       messages: [{ role: "system", content: systemPrompt(config) }, ...history],
     }),
     signal: AbortSignal.timeout(30_000),
@@ -134,7 +137,9 @@ async function stream(config, history, onText, tools = true) {
       const raw = buffer.slice(0, line).trim();
       buffer = buffer.slice(line + 1);
       if (!raw.startsWith("data: ") || raw === "data: [DONE]") continue;
-      const delta = JSON.parse(raw.slice(6)).choices?.[0]?.delta ?? {};
+      const event = JSON.parse(raw.slice(6));
+      if (event.error) throw new Error(`Front model: ${event.error.message ?? JSON.stringify(event.error)}`); // never fail silently
+      const delta = event.choices?.[0]?.delta ?? {};
       if (delta.content) { text += delta.content; onText(delta.content); }
       for (const part of delta.tool_calls ?? []) {
         const call = (calls[part.index ?? 0] ??= { id: "", type: "function", function: { name: "", arguments: "" } });
