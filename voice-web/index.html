@@ -153,7 +153,7 @@ let endAfterSpeech = false, on = false, phase = "off", stream, mic, analyser, da
 let player, current, currentBytes, queue = [], playing = false, generation = 0, controller, later = [];
 let resumable = null, turnEndedAt = 0;
 let pending = null; // { text, count, bubble }: words said before a pause that cut you off; the next turn carries on
-let heardNow = "", replyStarted = false, working = new Map(); // this turn's words; background jobs by id // what an interruption cut off, and when the last turn ended
+let carried = 0, heardNow = "", replyStarted = false, working = new Map(); // this turn's words; background jobs by id // what an interruption cut off, and when the last turn ended
 
 function set(next, text) {
   phase = next;
@@ -259,16 +259,15 @@ function tick() {
   document.documentElement.style.setProperty("--level", Math.min(1, rms * 9).toFixed(2));
   if (phase === "thinking") {
     // You carried on before it answered: drop the half-turn and keep listening, joining both parts.
-    // Talking is tracked from the start; it acts once the first part's words are known.
-    if (!muted && !replyStarted && rms > Math.max(SPEECH, floor * 3)) {
-      speechStart ||= now;
-      if (heardNow && now - speechStart > 400) {
-        pending = { text: heardNow, count: (pending?.count ?? 0) + 1, bubble: lastBubble };
-        lastReply?.remove();
-        generation += 1; controller?.abort();
-        lastLoud = now; listenSince = now; set("hearing", "Go on…");
-      }
-    } else speechStart = 0;
+    // Talking is counted from the start (even before the first part's words are back) and acted on once they are.
+    if (!muted && !replyStarted && rms > Math.max(SPEECH, floor * 3)) carried += 40;
+    if (carried > 400 && heardNow && !replyStarted && !muted) {
+      carried = 0;
+      pending = { text: heardNow, count: (pending?.count ?? 0) + 1, bubble: lastBubble };
+      lastReply?.remove();
+      generation += 1; controller?.abort();
+      lastLoud = now; listenSince = now; speechStart = now; set("hearing", "Go on…");
+    }
     return;
   }
   if (phase === "speaking") {
@@ -305,7 +304,7 @@ function tick() {
 async function send() {
   set("thinking");
   turnEndedAt = Date.now();
-  heardNow = ""; replyStarted = false; speechStart = 0;
+  heardNow = ""; replyStarted = false; speechStart = 0; carried = 0;
   const done = new Promise((resolve) => (recorder.onstop = resolve));
   const finished = recorder;
   finished.stop();

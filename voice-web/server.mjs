@@ -141,7 +141,7 @@ function jobStatus() {
 
 /** Hands one task to the worker and follows it until it finishes, then speaks the result. */
 async function run(job) {
-  // A moment's grace: if the person carried on talking and the turn was abandoned, the task never starts.
+  // A moment's grace: a turn abandoned within it (the person carried on talking) never starts its task.
   await sleep(1200);
   if (job.cancelled) { job.status = "cancelled"; broadcast({ type: "job", job: view(job) }); return; }
   job.status = "running";
