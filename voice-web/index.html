@@ -145,7 +145,7 @@
 <body>
 <header><h1 id="name">Sift</h1><div class="top"><span id="chip">Ready</span><button id="endChat" type="button" hidden aria-label="End the conversation">End</button></div></header>
 <main id="thread" aria-live="polite">
-  <div id="empty"><strong>Just talk</strong>Tap the orb to talk. Tap it again to pause listening.<br>Talk over me to interrupt, or type instead.</div>
+  <div id="empty"><strong>Just talk</strong>Tap the orb to start. Tap it again to pause listening.<br>Talk over me to interrupt, or type instead.</div>
 </main>
 <footer>
   <div class="dock">
@@ -155,250 +155,175 @@
   <div id="hint" class="sr" role="status">Tap to start</div>
 </footer>
 <script>
+// The call runs on Pipecat (pipecat/bot.py): one WebRTC call carries your voice in and its voice out,
+// and Pipecat decides turns and interruptions. Events about the call come back on its data channel (RTVI).
 const $ = (id) => document.getElementById(id);
 const empty = $("empty"), button = $("talk"), hint = $("hint"), chip = $("chip"), thread = $("thread");
-// ponytail: fixed loudness thresholds (0..1 RMS); tune here if a room cuts turns short or hears echoes.
-const SPEECH = 0.045, BARGE = 0.12, END_SILENCE = 700, MIN_SPEECH = 450, MAX_TURN = 60_000, IDLE_PAUSE = 45_000, AFTER_SPEAKING = 700;
-let floor = 0.01, deaf = 0; // the room's quiet level, and a moment after it speaks when it doesn't listen
-// ponytail: echo-aware barge-in. While it speaks, the mic hears some of its own voice even with echo
-// cancellation; that level is tracked and you must be clearly louder than it, for 300 ms, to cut in.
-let echo = 0.03, clipStartedAt = 0, spokeUntil = 0;
-const ECHO_RATIO = 2.5, BARGE_HOLD = 300, CLIP_ONSET = 350;
-let muted = false; // tapped out: not listening, but the conversation (replies, news) carries on
+const IDLE_HANGUP = 5 * 60_000; // ponytail: a call nobody speaks in for 5 minutes hangs up, so the mic is never left open
+let phase = "off", pc = null, dc = null, micStream = null, micTrack = null, muted = false, ready = false, waiting = [];
+let ping = 0, idleTimer = 0, endAfterSpeech = false, botSpeaking = false, levelCtx = null, micLevel = null, botLevel = null;
+let you = null, youText = "", reply = null, steps = null, working = new Map();
+const speaker = new Audio(); speaker.autoplay = true; speaker.setAttribute("playsinline", "");
 
-let endAfterSpeech = false, on = false, phase = "off", stream, mic, analyser, data, recorder, chunks = [], speechStart = 0, lastLoud = 0, listenSince = 0, loopTimer;
-let player, current, currentBytes, queue = [], playing = false, generation = 0, controller, later = [];
-let resumable = null, turnEndedAt = 0;
-let pending = null; // { text, count, bubble }: words said before a pause that cut you off; the next turn carries on
-let turnCount = 0, carried = 0, heardNow = "", replyStarted = false, working = new Map(); // this turn's words; background jobs by id // what an interruption cut off, and when the last turn ended
-
+const LABELS = { off: "Ready", connecting: "Connecting", muted: "Not listening", listening: "Listening", hearing: "Hearing you", thinking: "Thinking", speaking: "Speaking" };
 function set(next, text) {
   phase = next;
-  queueMicrotask(() => ($("typed").placeholder = hint.textContent || "Type instead"));
-  setTimeout(chipWork, 0);
-  document.body.className = { off: "idle", muted: "idle", listening: "listening", hearing: "listening", thinking: "waiting", speaking: "speaking" }[next];
-  chip.textContent = { off: "Ready", muted: "Not listening", listening: "Listening", hearing: "Hearing you", thinking: "Thinking", speaking: "Speaking" }[next];
-  hint.textContent = text ?? { off: "Tap to start", muted: "Not listening · tap to talk", listening: "Listening · tap to pause", hearing: "Go on…", thinking: "One sec…", speaking: "Talk over me to interrupt" }[next];
-  button.setAttribute("aria-label", !on ? "Start talking" : { hearing: "Send now", listening: "Stop listening", muted: "Listen" }[phase] ?? "Interrupt and listen");
-  $("endChat").hidden = !on;
+  document.body.className = { off: "idle", connecting: "waiting", muted: "idle", listening: "listening", hearing: "listening", thinking: "waiting", speaking: "speaking" }[next];
+  hint.textContent = text ?? { off: "Tap to start", connecting: "Connecting…", muted: "Not listening · tap to talk", listening: "Listening · tap to pause", hearing: "Go on…", thinking: "One sec…", speaking: "Talk over me, or tap, to interrupt" }[next];
+  $("typed").placeholder = hint.textContent || "Type instead";
+  button.setAttribute("aria-label", !pc ? "Start talking" : { listening: "Stop listening", hearing: "Stop listening", muted: "Listen" }[phase] ?? "Interrupt and listen");
+  $("endChat").hidden = !pc;
+  chipWork();
 }
 function el(tag, cls, text) { const n = document.createElement(tag); n.className = cls; if (text) n.textContent = text; return n; }
 function add(node) { empty.remove(); thread.append(node); thread.scrollTo({ top: thread.scrollHeight, behavior: "smooth" }); return node; }
 function audioMode(type) { try { if (navigator.audioSession) navigator.audioSession.type = type; } catch {} }
+function rtvi(type, data) { if (dc?.readyState === "open") dc.send(JSON.stringify({ label: "rtvi-ai", type, id: crypto.randomUUID?.() ?? String(Date.now()), data })); }
+function awake() { clearTimeout(idleTimer); if (pc) idleTimer = setTimeout(() => hangUp("Paused after a quiet spell. Tap to talk again."), IDLE_HANGUP); }
 
-// ---- Speaking: one Web Audio context, unlocked by the first tap, plays every clip in order.
-function unlockPlayer() {
-  player = player ?? new (window.AudioContext || window.webkitAudioContext)();
-  player.resume();
-  const silence = player.createBufferSource();
-  silence.buffer = player.createBuffer(1, 1, 22050);
-  silence.connect(player.destination);
-  silence.start(0);
-}
-const clipBytes = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;
-async function playQueue() {
-  if (playing) return;
-  playing = true;
-  const mine = generation;
-  while (queue.length && mine === generation) {
-    try {
-      const bytes = queue.shift();
-      currentBytes = bytes.slice(0); // decoding detaches the bytes; keep a copy to resume after a false interruption
-      const buffer = await player.decodeAudioData(bytes);
-      if (mine !== generation) break;
-      if (player.state !== "running") await player.resume();
-      if (on && phase !== "hearing") set("speaking");
-      await new Promise((done) => {
-        const source = player.createBufferSource();
-        source.buffer = buffer; source.connect(player.destination); source.onended = done;
-        current = source; source.start(); clipStartedAt = Date.now();
-        if (turnEndedAt) { // time to first audio, measured here on the phone
-          const ms = Date.now() - turnEndedAt; turnEndedAt = 0;
-          fetch("/api/metric", { method: "POST", body: JSON.stringify({ ms }) }).catch(() => {});
-        }
-      });
-    } catch (error) { console.warn("A clip didn't play", error); }
-  }
-  if (mine !== generation) return; // a newer loop owns the flags now
-  current = null; playing = false;
-  if (endAfterSpeech) { endAfterSpeech = false; end("Bye. Tap to talk again."); return; }
-  if (on && phase === "speaking") muted ? set("muted") : listen();
-}
-function speak(b64) { queue.push(clipBytes(b64)); playQueue(); }
-function hush() { endAfterSpeech = false; generation += 1; queue = []; try { current?.stop(); } catch {} current = null; playing = false; }
-
-// ---- Listening: the microphone stays open for the conversation; loudness decides the turns.
-async function begin() {
-  unlockPlayer();
+// ---- The call
+async function connect() {
+  set("connecting");
   audioMode("play-and-record");
-  stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-  mic = new (window.AudioContext || window.webkitAudioContext)();
-  await mic.resume();
-  analyser = mic.createAnalyser(); analyser.fftSize = 1024; data = new Float32Array(analyser.fftSize);
-  mic.createMediaStreamSource(stream).connect(analyser);
-  on = true;
-  listen();
-  loopTimer = setInterval(tick, 40);
+  micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  micTrack = micStream.getAudioTracks()[0];
+  micTrack.enabled = !muted;
+  levelCtx = new (window.AudioContext || window.webkitAudioContext)();
+  await levelCtx.resume();
+  micLevel = meter(micStream);
+  pc = new RTCPeerConnection({ iceServers: [] }); // tailnet only: both ends reach each other directly
+  const audio = pc.addTransceiver("audio", { direction: "sendrecv" }); // audio only: no camera, no video
+  await audio.sender.replaceTrack(micTrack);
+  dc = pc.createDataChannel("chat", { ordered: true });
+  dc.onopen = () => {
+    rtvi("client-ready", { version: "2.3.0", about: { library: "sift-voice", library_version: "1.0.0" } });
+    ping = setInterval(() => dc?.readyState === "open" && dc.send("ping: " + Date.now()), 1000); // Pipecat's keep-alive
+  };
+  dc.onmessage = (message) => { let m; try { m = JSON.parse(message.data); } catch { return; } if (m.label === "rtvi-ai") onEvent(m); };
+  pc.ontrack = (event) => {
+    if (event.track.kind !== "audio") return;
+    const stream = new MediaStream([event.track]);
+    speaker.srcObject = stream; speaker.play().catch(() => {});
+    try { botLevel = meter(stream); } catch {}
+  };
+  let dropped = 0;
+  pc.onconnectionstatechange = () => {
+    const state = pc?.connectionState;
+    if (state === "failed") hangUp("The call dropped. Tap to talk again.");
+    else if (state === "disconnected") dropped = setTimeout(() => pc?.connectionState === "disconnected" && hangUp("The call dropped. Tap to talk again."), 6000);
+    else if (state === "connected") clearTimeout(dropped);
+  };
+  await pc.setLocalDescription(await pc.createOffer());
+  await gathered(pc, 2500);
+  const response = await fetch("/api/offer", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type, pc_id: null, restart_pc: false }) });
+  const answer = await response.json().catch(() => ({}));
+  if (!response.ok || !answer.sdp) throw new Error(answer.error || answer.detail || "The voice engine didn't answer.");
+  await pc.setRemoteDescription({ sdp: answer.sdp, type: answer.type });
+  awake();
 }
-function end(text) {
-  pending?.bubble?.remove(); pending = null; muted = false; // a half-finished sentence never carries into the next chat
-  on = false; hush(); controller?.abort();
-  clearInterval(loopTimer);
-  try { recorder?.state === "recording" && recorder.stop(); } catch {}
-  stream?.getTracks().forEach((t) => t.stop()); stream = null;
-  mic?.close(); mic = null;
+function gathered(peer, ms) {
+  return new Promise((done) => {
+    if (peer.iceGatheringState === "complete") return done();
+    const timer = setTimeout(done, ms);
+    peer.addEventListener("icegatheringstatechange", () => peer.iceGatheringState === "complete" && (clearTimeout(timer), done()));
+  });
+}
+function hangUp(text) {
+  rtvi("disconnect-bot");
+  clearInterval(ping); clearTimeout(idleTimer);
+  try { dc?.close(); } catch {} try { pc?.close(); } catch {}
+  pc = null; dc = null; ready = false; waiting = []; endAfterSpeech = false; botSpeaking = false; muted = false;
+  micStream?.getTracks().forEach((t) => t.stop()); micStream = null; micTrack = null;
+  speaker.srcObject = null;
+  levelCtx?.close().catch(() => {}); levelCtx = null; micLevel = botLevel = null;
   audioMode("playback");
-  document.documentElement.style.setProperty("--level", 0);
+  steps?.querySelectorAll(".step").forEach((s) => s.classList.add("done"));
+  you = null; reply = null; steps = null;
   set("off", text);
 }
-function record() {
-  if (recorder?.state === "recording") { recorder.ondataavailable = null; recorder.stop(); } // only one recorder feeds a turn
-  const type = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"].find((t) => MediaRecorder.isTypeSupported(t)) ?? "";
-  recorder = new MediaRecorder(stream, type ? { mimeType: type } : {});
-  chunks = [];
-  recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-  recorder.start();
-}
-function listen() {
-  echo = Math.max(0.02, echo * 0.5); // relearn the echo level for the next reply
-  record(); speechStart = 0; lastLoud = 0; listenSince = Date.now(); deaf = Date.now() + AFTER_SPEAKING; set("listening");
-  // News that arrived while you were talking plays now.
-  if (later.length) { const news = later; later = []; news.forEach(speak); }
-}
+function listenOrMute() { set(muted ? "muted" : "listening"); }
 
-function level() {
-  analyser.getFloatTimeDomainData(data);
-  let sum = 0; for (const v of data) sum += v * v;
-  return Math.sqrt(sum / data.length);
-}
-function tick() {
-  if (!on || !analyser) return;
-  const rms = level(), now = Date.now();
-  document.documentElement.style.setProperty("--level", Math.min(1, rms * 9).toFixed(2));
-  if (phase === "thinking") {
-    // You carried on before it answered: drop the half-turn and keep listening, joining both parts.
-    // Talking is counted from the start (even before the first part's words are back) and acted on once they are.
-    if (!muted && !replyStarted && rms > Math.max(SPEECH, floor * 3)) carried += 40;
-    if (carried > 400 && heardNow && !replyStarted && !muted) {
-      carried = 0;
-      pending = { text: heardNow, count: turnCount + 1, bubble: lastBubble };
-      lastReply?.remove();
-      generation += 1; controller?.abort();
-      lastLoud = now; listenSince = now; speechStart = now; set("hearing", "Go on…");
-    }
+// ---- What the call tells us
+function onEvent({ type, data }) {
+  if (type === "bot-ready") { ready = true; listenOrMute(); waiting.splice(0).forEach(typedSend); return; }
+  if (type === "user-started-speaking") { awake(); if (muted) return; if (!you) startYou("You said"); set("hearing"); return; }
+  if (type === "user-transcription" && data?.text) {
+    if (!you) startYou("You said");
+    if (data.final) youText = `${youText} ${data.text}`.trim();
+    you.querySelector(".words").textContent = data.final ? youText : `${youText} ${data.text}`.trim();
     return;
   }
-  if (phase === "speaking") {
-    spokeUntil = now;
-    if (now - clipStartedAt < CLIP_ONSET) { // learn this clip's echo first (capped); never a barge-in
-      speechStart = 0;
-      echo = Math.min(0.1, echo * 0.8 + rms * 0.2);
-      return;
-    }
-    const bar = Math.max(BARGE, echo * ECHO_RATIO);
-    if (rms > bar) {
-      speechStart ||= now;
-      if (now - speechStart > BARGE_HOLD) {
-        resumable = [currentBytes, ...queue].filter(Boolean); // in case it was only a cough (replays this sentence)
-        hush(); controller?.abort(); listen(); speechStart = now; set("hearing", "Go ahead, I stopped");
-      }
-    } else {
-      speechStart = 0;
-      if (rms < bar * 0.8) echo = Math.min(0.1, echo * 0.95 + rms * 0.05); // its own voice on the mic, capped so quiet talk can't raise the bar for good
-    }
+  if (type === "user-stopped-speaking") { if (phase === "hearing") set("thinking"); return; }
+  if (type === "bot-llm-started") { closeYou(); reply = null; if (phase !== "speaking") set("thinking"); return; }
+  if (type === "bot-llm-text" && data?.text) {
+    finishSteps();
+    if (!reply) reply = add(el("p", "sift"));
+    reply.textContent = (reply.textContent + data.text).replace(/^\s+/, "");
+    thread.scrollTo({ top: thread.scrollHeight });
     return;
   }
-  if (phase === "listening" || phase === "hearing") {
-    if (now < deaf) return; // the tail of its own voice is not you talking
-    if (phase === "listening") floor = floor * 0.97 + Math.min(rms, 0.05) * 0.03; // follow the room's hum
-    if (rms > Math.max(SPEECH, floor * 3)) { lastLoud = now; if (!speechStart) speechStart = now; if (phase === "listening" && now - speechStart > 150) set("hearing"); }
-    if (phase === "hearing" && now - lastLoud > END_SILENCE && lastLoud - speechStart > MIN_SPEECH) send();
-    else if (phase === "hearing" && now - listenSince > MAX_TURN) send();
-    else if (phase === "listening" && !speechStart && now - listenSince > IDLE_PAUSE) end(working.size ? "Paused. I'll still tell you when the work's done." : "Paused. Tap to talk again.");
-    if (phase === "hearing" && now - lastLoud > END_SILENCE && lastLoud - speechStart <= MIN_SPEECH) { speechStart = 0; set("listening"); }
+  if (type === "bot-started-speaking") { awake(); botSpeaking = true; set("speaking"); return; }
+  if (type === "bot-stopped-speaking") {
+    botSpeaking = false;
+    if (endAfterSpeech) return void setTimeout(() => hangUp("Bye. Tap to talk again."), 300);
+    listenOrMute(); return;
   }
+  if (type === "server-message" && data?.type === "tool") { showStep(data); return; }
+  if (type === "server-message" && data?.type === "end") {
+    endAfterSpeech = true;
+    setTimeout(() => endAfterSpeech && !botSpeaking && hangUp("Bye. Tap to talk again."), 2500);
+    return;
+  }
+  if (type === "error" && data?.message) add(el("p", "note", data.message));
 }
-
-async function send() {
-  set("thinking");
-  turnEndedAt = Date.now();
-  heardNow = ""; replyStarted = false; speechStart = 0; carried = 0;
-  const done = new Promise((resolve) => (recorder.onstop = resolve));
-  const finished = recorder;
-  finished.stop();
-  await done;
-  const blob = new Blob(chunks, { type: finished.mimeType || "audio/webm" });
-  if (on && !muted) record(); // standby: if you carry on talking, nothing you say is lost
-  const before = pending;
-  pending = null;
-  turnCount = before?.count ?? 0;
-  before?.bubble?.remove();
-  const headers = { "Content-Type": blob.type };
-  if (before) { headers["x-said-before"] = encodeURIComponent(before.text); headers["x-continuations"] = String(before.count); }
-  if (muted) headers["x-continuations"] = "2"; // you tapped out: you've finished, so never wait for more
-  const unfinished = await converse("You said", (signal) => fetch("/api/turn", { method: "POST", headers, body: blob, signal }), before?.count ?? 0);
-  if (unfinished && on) { listenSince = Date.now(); speechStart = 0; lastLoud = 0; set("listening", "Go on…"); }
-}
-
-/** One exchange, voice or typed: shows what was heard, streams the reply text and plays its speech. */
-let lastBubble = null, lastReply = null;
-async function converse(label, request, count = 0) {
-  const mine = generation;
-  const you = el("p", "you"), said = el("span", "words", "…");
-  you.append(el("span", "label", label), said);
-  const reply = el("p", "sift");
+function startYou(label) {
+  closeYou();
+  you = el("p", "you"); you.append(el("span", "label", label), el("span", "words", "…"));
+  youText = "";
   add(you);
-  lastBubble = you; lastReply = reply;
-  let unfinished = false;
-  controller = new AbortController();
-  try {
-    const response = await request(controller.signal);
-    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Something went wrong.");
-    const reader = response.body.getReader(), decoder = new TextDecoder();
-    let buffer = "", spoke = false;
-    for (;;) {
-      const { value, done: ended } = await reader.read();
-      if (ended) break;
-      buffer += decoder.decode(value, { stream: true });
-      let line;
-      while ((line = buffer.indexOf("\n")) >= 0) {
-        const event = JSON.parse(buffer.slice(0, line)); buffer = buffer.slice(line + 1);
-        if (mine !== generation) continue;
-        if (event.type === "heard") {
-          if (event.unfinished) { said.textContent = event.text + " …"; pending = { text: event.text, count: count + 1, bubble: you }; unfinished = true; }
-          else if (event.text) { said.textContent = event.text; heardNow = event.text; resumable = null; }
-          else {
-            you.remove();
-            // Nothing real was said: if that cut it off, carry on where it stopped.
-            if (resumable?.length) { const rest = resumable; resumable = null; rest.forEach((b) => queue.push(b)); playQueue(); spoke = true; }
-          }
-        }
-        else if (event.type === "text") { if (!reply.isConnected) add(reply); reply.textContent = event.text.trimStart(); }
-        else if (event.type === "audio") { spoke = true; replyStarted = true; speak(event.data); }
-        else if (event.type === "error") add(el("p", "note", event.message));
-        else if (event.type === "end") { endAfterSpeech = true; }
-      }
-    }
-    if (unfinished) return true; // send() keeps listening for the rest
-    if (endAfterSpeech && !spoke && !playing) { endAfterSpeech = false; end("Bye. Tap to talk again."); }
-    else if (on && mine === generation && !spoke && !playing) muted ? set("muted") : listen();
-  } catch (error) {
-    if (error.name !== "AbortError") add(el("p", "note", error.message));
-    if (on && phase === "thinking") muted ? set("muted") : listen();
-  }
 }
+function closeYou() {
+  if (you && !youText && you.querySelector(".words").textContent === "…") you.remove(); // nothing was really said
+  you = null; youText = "";
+}
+/** What it's doing: one line per tool, ticked off when the answer starts. */
+function showStep({ name, label, args }) {
+  closeYou();
+  if (!steps) steps = add(el("ul", "steps"));
+  steps.querySelectorAll(".step").forEach((s) => s.classList.add("done"));
+  const detail = name === "paseo" ? args?.command : name === "read_session" || name === "read_source" || name === "skill" ? args?.name : name === "delegate" ? args?.to : "";
+  steps.append(el("li", "step", detail ? `${label}: ${detail}` : label));
+  if (phase !== "speaking") set("thinking");
+}
+function finishSteps() { steps?.querySelectorAll(".step").forEach((s) => s.classList.add("done")); steps = null; }
+
+// ---- The orb's size follows whoever is talking
+function meter(stream) {
+  const analyser = levelCtx.createAnalyser(); analyser.fftSize = 1024;
+  levelCtx.createMediaStreamSource(stream).connect(analyser);
+  const data = new Float32Array(analyser.fftSize);
+  return () => { analyser.getFloatTimeDomainData(data); let sum = 0; for (const v of data) sum += v * v; return Math.sqrt(sum / data.length); };
+}
+(function frame() {
+  const source = phase === "speaking" ? botLevel : phase === "listening" || phase === "hearing" ? micLevel : null;
+  const rms = source ? source() : 0;
+  document.documentElement.style.setProperty("--level", Math.min(1, rms * 9).toFixed(2));
+  requestAnimationFrame(frame);
+})();
 
 /** The header chip also says when a session is still working in the background. */
 function chipWork() {
   const busy = [...working.values()];
-  const base = { off: "Ready", muted: "Not listening", listening: "Listening", hearing: "Hearing you", thinking: "Thinking", speaking: "Speaking" }[phase] ?? "";
+  const base = LABELS[phase] ?? "";
   chip.textContent = busy.length ? `${base} · ${busy.length === 1 ? busy[0] + " working" : busy.length + " working"}` : base;
 }
 const elapsed = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`; };
 const shortTask = (task) => { const t = task.replace(/^\(.*?\)\s*/, "").replace(/^(jon|he|she|they)\s+(says|asks|wants)[:,]?\s*/i, ""); return t.length > 110 ? t.slice(0, 107).trimEnd() + "…" : t; };
-setInterval(() => cards.forEach((card, id) => { if (card.dataset.started && card.classList.contains("running")) card.querySelector(".time").textContent = elapsed(Date.now() - Number(card.dataset.started)); }), 1000);
+setInterval(() => cards.forEach((card) => { if (card.dataset.started && card.classList.contains("running")) card.querySelector(".time").textContent = elapsed(Date.now() - Number(card.dataset.started)); }), 1000);
 
-// ---- Background work from the worker session: cards that update, and news spoken when ready.
+// ---- Background work from the worker sessions: cards that update. News is spoken inside an open call;
+// with no call open, the server sends it as clips, played if this page has been tapped once.
 const cards = new Map();
 function showJob(job) {
   let card = cards.get(job.id);
@@ -420,45 +345,54 @@ function showJob(job) {
   if (job.status === "running" || job.status === "queued") working.set(job.id, Who); else working.delete(job.id);
   chipWork();
 }
+let tapped = false, clips = Promise.resolve();
 const events = new EventSource("/api/events");
 events.onmessage = (message) => {
   const event = JSON.parse(message.data);
   if (event.type === "job") showJob(event.job);
   if (event.type === "say") {
     add(el("p", "sift", event.text));
-    if (phase === "hearing" || phase === "thinking") later.push(...event.audio); // never over your own turn
-    else if (player) { if (!on) hint.textContent = "News from your worker"; event.audio.forEach(speak); }
+    if (!pc && tapped && event.audio?.length) {
+      hint.textContent = "News from your worker";
+      for (const b64 of event.audio) clips = clips.then(() => new Promise((done) => { const a = new Audio(`data:audio/mpeg;base64,${b64}`); a.onended = a.onerror = done; a.play().catch(done); }));
+    }
   }
 };
 fetch("/api/config").then((r) => r.json()).then((c) => {
   $("name").textContent = c.assistant; document.title = c.assistant || "Voice"; c.jobs.forEach(showJob);
 });
 
+// ---- Typing: goes into the same call (one is started, listening paused, if none is open).
 const form = $("ask"), typed = $("typed"), sendButton = form.querySelector("button");
 typed.addEventListener("input", () => (sendButton.disabled = !typed.value.trim()));
+function typedSend(text) {
+  startYou("You typed"); you.querySelector(".words").textContent = text; youText = text;
+  rtvi("send-text", { content: text, options: { run_immediately: true, audio_response: true } });
+  set("thinking"); awake();
+}
 form.addEventListener("submit", (event) => {
   event.preventDefault();
   const text = typed.value.trim();
   if (!text) return;
-  typed.value = ""; sendButton.disabled = true;
-  pending?.bubble?.remove(); pending = null; // typing starts a fresh question
-  unlockPlayer(); // the send tap lets the reply play
-  hush(); controller?.abort();
-  if (on) set("thinking");
-  turnEndedAt = Date.now();
-  converse("You typed", (signal) => fetch("/api/text", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }), signal }));
+  typed.value = ""; sendButton.disabled = true; tapped = true;
+  speaker.play().catch(() => {}); // this tap lets the reply play
+  if (ready) return typedSend(text);
+  waiting.push(text);
+  if (!pc) { muted = true; connect().catch((e) => hangUp("Couldn't start: " + e.message)); }
 });
 
-// Tap in and out: the orb switches listening on and off; the conversation carries on until "End" or bye.
+// Tap in and out: the orb switches listening on and off; the call carries on until "End" or bye.
 button.addEventListener("click", () => {
-  if (!on) { muted = false; begin().catch((e) => end("Microphone unavailable: " + e.message)); return; }
-  if (phase === "hearing") { muted = true; send(); return; } // you're done: send it, and stop listening
-  if (phase === "listening") { muted = true; try { recorder?.state === "recording" && (recorder.ondataavailable = null, recorder.stop()); } catch {} set("muted"); return; }
-  muted = false; // muted, thinking or speaking: listen now (interrupting anything it's saying)
-  if (phase === "speaking" || phase === "thinking") { hush(); controller?.abort(); }
-  listen(); set("listening", "Go ahead, I'm listening");
+  tapped = true;
+  speaker.play().catch(() => {}); // unlocks playback on iPhone from this tap
+  if (!pc) { muted = false; connect().catch((e) => hangUp("Couldn't start: " + e.message)); return; }
+  if (phase === "connecting") return;
+  if (phase === "listening" || phase === "hearing") { muted = true; micTrack.enabled = false; set("muted"); return; }
+  muted = false; micTrack.enabled = true; awake();
+  if (phase === "speaking" || phase === "thinking") rtvi("client-message", { t: "interrupt" });
+  set("listening", "Go ahead, I'm listening");
 });
-$("endChat").addEventListener("click", () => end("Ended. Tap to talk again."));
+$("endChat").addEventListener("click", () => hangUp("Ended. Tap to talk again."));
 set("off");
 </script>
 </body>
