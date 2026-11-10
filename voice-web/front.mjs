@@ -76,8 +76,10 @@ How to work:
  */
 export async function respond(config, history, userText, handlers, onText, { tools = true } = {}) {
   history.push({ role: "user", content: userText });
-  for (let round = 0; round < 3; round += 1) {
+  let quiet = false;
+  for (let round = 0; round < 4; round += 1) {
     const { text, calls } = await stream(config, history, onText, tools);
+    if (calls.some((call) => ["stay_quiet", "end_conversation"].includes(call.function.name))) quiet = true;
     if (!tools) { history.push({ role: "assistant", content: text }); break; } // no tools offered: never run any
     history.push({ role: "assistant", content: text || null, ...(calls.length ? { tool_calls: calls } : {}) });
     if (!calls.length) break;
@@ -98,6 +100,13 @@ export async function respond(config, history, userText, handlers, onText, { too
       break;
     }
     if (!names.some((name) => SPEAK_RESULT.has(name)) && text) break;
+  }
+  // Lookups done but nothing said yet: one last round without tools, so every question gets an answer.
+  if (!quiet && history.at(-1)?.role === "tool") { // a lookup's result was never spoken (even after "let me check")
+    const { text } = await stream(config, history, onText, false);
+    const answer = text || "I couldn't get to that just now.";
+    if (!text) onText(answer);
+    history.push({ role: "assistant", content: answer });
   }
   history.splice(0, Math.max(0, history.length - HISTORY));
   while (history[0] && history[0].role !== "user") history.shift(); // never start mid-exchange
