@@ -174,7 +174,7 @@ function readSource({ name }) {
   const source = (config.sources ?? []).find((s) => s.name.toLowerCase() === String(name ?? "").toLowerCase());
   if (!source) return Promise.resolve(`No source called "${name}". Sources: ${(config.sources ?? []).map((s) => s.name).join(", ") || "none"}.`);
   return new Promise((resolve) => execFile("/bin/sh", ["-c", source.command], { timeout: 15_000, maxBuffer: 1 << 20 },
-    (error, stdout) => resolve(error ? `Couldn't read ${source.name}: ${error.message}` : (stdout.trim() || "It's empty.").slice(-6000))));
+    (error, stdout) => resolve(error ? `Couldn't read ${source.name}: ${error.message}` : (stdout.trim() || "It's empty.").slice(0, 9000)))); // the top: each source's command decides what it covers
 }
 
 function jobStatus() {
