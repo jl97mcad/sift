@@ -289,15 +289,15 @@ const answered = []; // asks answered by voice ({ at, plan, title }), for the ca
 async function answerAskTool(args) {
   if (!answering(config)) return "Answering asks by voice isn't set up here.";
   const result = await answerAsk(config, args ?? {});
-  if (/^Recorded/.test(result)) answered.push({ at: Date.now(), plan: args.plan, note: result.slice(0, 200) });
+  if (/^Recorded/.test(result)) answered.push({ at: Date.now(), call: args._call, plan: args.plan, note: result.slice(0, 200) });
   answered.splice(0, Math.max(0, answered.length - 50));
   return result;
 }
 
 /** A finished call's memory note: one cheap model call, appended to the day's file. */
-async function remember({ started, turns }) {
+async function remember({ started, call, turns }) {
   const at = Date.parse(started) || Date.now();
-  const asks = answered.filter((a) => a.at >= at).map((a) => `- ${a.plan}: ${a.note}`).join("\n");
+  const asks = answered.filter((a) => (call ? a.call === call : a.at >= at)).map((a) => `- ${a.plan}: ${a.note}`).join("\n");
   const t0 = Date.now();
   const summary = await summariseCall(config, turns, asks ? `Asks answered in this call (from the tool):\n${asks}` : "");
   if (!summary) return console.log("memory: nothing to note for that call");
@@ -582,7 +582,7 @@ createServer(async (request, response) => {
       try { args = JSON.parse((await body(request)).toString() || "{}"); } catch {}
       const started = Date.now();
       const result = String(await handler(args));
-      const { _heard, _last, _turn, ...shown } = args;
+      const { _heard, _last, _turn, _call, ...shown } = args;
       console.log(`tool ${tool[1]} ${JSON.stringify(shown).slice(0, 200)} -> ${result.length} chars in ${Date.now() - started} ms`);
       return send(response, 200, { result });
     }

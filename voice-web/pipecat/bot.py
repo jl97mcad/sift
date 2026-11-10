@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import random
+import uuid
 from datetime import datetime, timezone
 
 import aiohttp
@@ -239,6 +240,7 @@ async def bot(runner_args: RunnerArguments):
             args["_heard"] = " ".join(said[-3:])
             args["_last"] = said[-1] if said else ""
             args["_turn"] = len(said)  # a yes must come in a later turn than its read-back
+            args["_call"] = call_id
         try:
             async with http.post(f"{TOOLS}/bot/tool/{name}", json=args) as r:
                 result = (await r.json()).get("result", "")
@@ -305,6 +307,7 @@ async def bot(runner_args: RunnerArguments):
 
     workers: list[asyncio.Task] = []
     started = datetime.now(timezone.utc)
+    call_id = uuid.uuid4().hex  # ties this call's answered asks to its note
 
     def add_preload(block: str):
         """Puts the already-read block into the system message, wherever the conversation is."""
@@ -342,7 +345,7 @@ async def bot(runner_args: RunnerArguments):
     async def _disconnected(_t, _c):
         logger.info("SIFT call ended")
         try:
-            body = {"started": started.isoformat(), "ended": datetime.now(timezone.utc).isoformat(), "turns": transcript()}
+            body = {"started": started.isoformat(), "ended": datetime.now(timezone.utc).isoformat(), "call": call_id, "turns": transcript()}
             async with http.post(f"{TOOLS}/bot/call-ended", json=body, timeout=aiohttp.ClientTimeout(total=5)) as r:
                 await r.read()
         except Exception as error:

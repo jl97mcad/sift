@@ -118,7 +118,7 @@ import { answerArgv, answerAsk, clearYes, consequence, findAsks, forget, notHear
   const ask = store.asks.a;
   assert.deepEqual(answerArgv(ask, "Yes, send it. It's fine; $(rm -rf /)"), ["board", "answered", "JON-4119", "--ask-id", "a1", "--text", "Yes, send it. It's fine; $(rm -rf /)", "--summary", "Owner answered by voice: approved the recommendation.", "--action", "answer"]);
   assert.ok(consequence(ask).startsWith("This lets Control send it outside the company"));
-  assert.deepEqual(notHeard("Consider JON-4122 done", "Consider John forty-one twenty-two done."), []);
+  assert.deepEqual(notHeard("Consider JON-4122 done", "Consider John forty-one twenty-two done.", "JON 4122"), []);
   assert.deepEqual(notHeard("approved", "Yes, send it"), ["approved"]);
   const writes = [], logs = [];
   let state = "open";
@@ -150,7 +150,10 @@ import { answerArgv, answerAsk, clearYes, consequence, findAsks, forget, notHear
   assert.equal(writes.length, 1);
   assert.ok((await answerAsk(cfg, { plan: "JON-4119", answer: "Yes", confirmed: true, _turn: 4, _last: "Yes, record it." }, deps)).startsWith("Recorded"));
   assert.equal(writes.length, 2);
-  assert.ok(clearYes("Yes, go ahead.") && clearYes("Record it please") && !clearYes("No") && !clearYes("Yes but don't send it") && !clearYes("What's the time?"));
+  assert.ok(clearYes("Yes, go ahead.") && clearYes("Record it please") && !clearYes("No") && !clearYes("Yes but don't send it") && !clearYes("What's the time?") && !clearYes("Please check the time") && !clearYes("Right, what else?"));
+  assert.equal(summaryFor("I don't want to send it"), "Owner answered by voice: declined the recommendation.");
+  assert.deepEqual(notHeard("Send 5 copies", "send copies"), ["5"]);
+  assert.deepEqual(notHeard("JON-4164: yes", "John forty-one sixty-four yes", "JON-4164"), []);
   state = "open";
   await answerAsk(cfg, { plan: "JON-4119", answer: "Yes" }, deps);
   const failed = await answerAsk(cfg, { plan: "JON-4119", answer: "Yes", confirmed: true, _turn: 9, _last: "yes" }, { ...deps, write: async () => ({ code: 1, out: "", err: "Linear 500" }) });

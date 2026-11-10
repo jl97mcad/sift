@@ -66,7 +66,7 @@ const SERIOUS = new Set(["outside_send", "money", "access", "signature", "signat
 export function summaryFor(answer) {
   const t = ` ${String(answer ?? "").toLowerCase().replace(/[^a-z' ]+/g, " ")} `;
   const no = / (no|nope|don't|do not|dont|not now|not yet|hold off|decline|reject|stop|cancel|never|leave it|skip it|drop it) /.test(t);
-  const unnegated = t.replace(/ (don't|do not|dont|never|not) \S+( \S+)?/g, " "); // "don't send it" isn't "send it"
+  const unnegated = t.replace(/ (don't|do not|dont|never|not)( \S+){1,4}/g, " "); // "don't want to send it" isn't "send it"
   const yes = / (yes|yeah|yep|yup|approve|approved|go ahead|go for it|do it|send it|ship it|sounds good|agreed|agree|fine|ok|okay|sure|confirmed|done|correct) /.test(unnegated);
   // Both ("yes, but not yet") is direction, never a bare approval.
   if (no && !yes) return "Owner answered by voice: declined the recommendation.";
@@ -87,15 +87,16 @@ const wordsOf = (text) => String(text ?? "").toLowerCase().replace(/[’']/g, ""
  * (heard as "John forty-one nineteen", written JON-4119), must be in what was heard. Returns the
  * missing words; none means the answer is theirs.
  */
-export function notHeard(answer, heard) {
+export function notHeard(answer, heard, plan = "") {
   const have = new Set(wordsOf(heard));
-  return wordsOf(answer).filter((w) => !have.has(w) && !NUMBER_WORDS.has(w) && !/^\d+$/.test(w) && !/^[a-z]{2,10}\d+$/.test(w));
+  const planWords = new Set(wordsOf(plan)); // "JON-4164" may be heard as "John forty-one sixty-four"
+  return wordsOf(answer).filter((w) => !have.has(w) && !NUMBER_WORDS.has(w) && !planWords.has(w) && !/^[a-z]{2,10}\d+$/.test(w));
 }
 
 /** A clear yes ("yes", "go ahead", "record it"), with no "no" or "don't" in it. */
 export function clearYes(text) {
   const t = ` ${String(text ?? "").toLowerCase().replace(/[^a-z' ]+/g, " ")} `;
-  const yes = / (yes|yeah|yep|yup|go ahead|go for it|do it|record it|confirm|confirmed|correct|that's right|right|sure|please|ok|okay) /.test(t);
+  const yes = / (yes|yeah|yep|yup|go ahead|go for it|do it|record it|confirm|confirmed|correct|that's right|sure|ok|okay) /.test(t);
   const no = / (no|nope|don't|do not|dont|not|wait|hang on|hold on|stop|cancel|actually|change) /.test(t);
   return yes && !no;
 }
@@ -124,6 +125,7 @@ export function run(command, input, timeoutMs = 45_000) {
  * log(line) records what happened, now() the time.
  */
 export async function answerAsk(config, { plan, answer, confirmed, which, _heard: heard, _turn: turn, _last: last } = {}, deps = {}) {
+  // (_call, the bot's id for the call, is used by the server for the call's note.)
   const person = config.person || "the person";
   const list = deps.list ?? (async () => {
     const r = await run(config.asks.listCommand, "", 20_000);
@@ -138,7 +140,7 @@ export async function answerAsk(config, { plan, answer, confirmed, which, _heard
   if (!words) return `I need ${person}'s own words for the answer. Ask what they want to say.`;
   // When the caller knows what was heard, the answer has to be made of those words: never a paraphrase.
   if (heard && confirmed !== true) {
-    const missing = notHeard(words, heard);
+    const missing = notHeard(words, heard, plan);
     if (missing.length) return `Not their words: they didn't say "${missing.slice(0, 5).join(" ")}". Call again with the answer exactly as they said it. What they said: "${short(heard, 400)}"`;
   }
   let asks;
