@@ -327,6 +327,13 @@ async function run(job) {
   return announce(job);
 }
 
+/** A call's WebRTC offer (and ICE candidates), passed to the Pipecat bot. */
+async function offer(request, response) {
+  const answer = await fetch(`${PIPECAT}/api/offer`, { method: request.method, headers: { "Content-Type": "application/json" }, body: await body(request), signal: AbortSignal.timeout(20_000) })
+    .catch((error) => ({ ok: false, status: 502, text: async () => JSON.stringify({ error: `The voice engine isn't answering: ${error.message}` }) }));
+  return send(response, answer.status ?? (answer.ok ? 200 : 502), await answer.text(), "application/json; charset=utf-8"); // already JSON
+}
+
 /** Speaks a finished job's result: a short summary, or an honest one-line fallback. */
 async function announce(job) {
   // An open call speaks it in its own words and keeps the answer for follow-ups.
@@ -450,11 +457,7 @@ const page_server = createServer(async (request, response) => {
       return;
     }
     // The call itself: the page's WebRTC offer (and its ICE candidates) go to the Pipecat bot.
-    if ((request.method === "POST" || request.method === "PATCH") && request.url === "/api/offer") {
-      const answer = await fetch(`${PIPECAT}/api/offer`, { method: request.method, headers: { "Content-Type": "application/json" }, body: await body(request), signal: AbortSignal.timeout(20_000) })
-        .catch((error) => ({ ok: false, status: 502, text: async () => JSON.stringify({ error: `The voice engine isn't answering: ${error.message}` }) }));
-      return send(response, answer.status ?? (answer.ok ? 200 : 502), await answer.text(), "application/json; charset=utf-8"); // already JSON
-    }
+    if ((request.method === "POST" || request.method === "PATCH") && request.url === "/api/offer") return await offer(request, response);
     if (request.method === "POST" && request.url === "/api/turn") return await turn(request, response);
     if (request.method === "POST" && request.url === "/api/text") {
       const { text } = JSON.parse((await body(request)).toString() || "{}");
@@ -519,3 +522,18 @@ createServer(async (request, response) => {
     if (!response.headersSent) send(response, 500, { result: `That failed: ${error.message ?? error}` });
   }
 }).listen(BOT_PORT, "127.0.0.1", () => console.log(`Bot tools on http://127.0.0.1:${BOT_PORT}`));
+
+// DEVICE_LISTEN (host:port): a voice gadget's way in, e.g. over a WireGuard link. It takes call offers
+// only: no page, no tools, no job list. Retries while its interface isn't up yet.
+if (process.env.DEVICE_LISTEN) {
+  const [host, port] = [process.env.DEVICE_LISTEN.replace(/:\d+$/, ""), Number(process.env.DEVICE_LISTEN.match(/:(\d+)$/)?.[1])];
+  const device = createServer(async (request, response) => {
+    try {
+      if ((request.method === "POST" || request.method === "PATCH") && request.url === "/api/offer") return await offer(request, response);
+      send(response, 404, { error: "Not found" });
+    } catch (error) { if (!response.headersSent) send(response, 500, { error: error.message ?? String(error) }); }
+  });
+  const listen = () => device.listen(port, host, () => console.log(`Device calls on http://${host}:${port}/api/offer`));
+  device.on("error", (error) => { console.error(`Device listener on ${host}:${port}: ${error.message}; retrying in 10 s`); setTimeout(listen, 10_000); });
+  listen();
+}
