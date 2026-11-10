@@ -29,7 +29,8 @@
     {
       "name": "focus list",
       "use": "The decision-maker's current focus list and priorities",
-      "command": "cat /path/to/focus-list.md"
+      "command": "cat /path/to/focus-list.md",
+      "preload": true
     }
   ],
   "paseo": {
@@ -38,5 +39,19 @@
     },
     "default": "main"
   },
-  "hearing": "Plan numbers are like ABC-123; \"ABC one two three\" is ABC-123."
+  "hearing": "Plan numbers are like ABC-123; \"ABC one two three\" is ABC-123.",
+  "preload": false,
+  "filler": false,
+  "asks": {
+    "_note": "Optional. Both commands set turns on answer_ask. listCommand prints asks.json; answerCommand reads {\"argv\": [\"board\", \"answered\", ...]} as JSON on stdin and runs it. dryRun logs the write instead of running it.",
+    "listCommand": "",
+    "answerCommand": "",
+    "dryRun": true
+  },
+  "memory": {
+    "_note": "Optional. dir turns on call notes and recall; dejaCommand reads the query on stdin.",
+    "dir": "",
+    "dejaCommand": ""
+  },
+  "_note_preload": "preload: read the needs queue, sessions, sources marked preload and recent call notes at call start (and offer catch_up). filler: say a short line when a tool starts in silence."
 }

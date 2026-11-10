@@ -1,0 +1,82 @@
+{
+  "_note": "Invented data in the shape of real tool results. The repo is public: never paste live output here.",
+  "config": {
+    "assistant": "Sift",
+    "person": "Jon",
+    "timezone": "Europe/London",
+    "language": "en",
+    "about": "Jon runs a small agency. His work runs through Paseo agent sessions on a box called main-box.",
+    "frontModel": "deepseek/deepseek-v4.1-flash",
+    "workers": [
+      { "name": "Control", "seat": "control", "use": "Plans, agents, PRs, deploys, the board, and getting things done", "handoff": "I'll ask Control" },
+      { "name": "the god session", "seat": "god", "use": "Jon's priorities, decisions and the overall picture", "handoff": "Let me check with your god session" },
+      { "name": "plan lead", "lead": true, "use": "One plan's detail; needs the plan number, like JON-123", "handoff": "I'll ask that plan's lead" },
+      { "name": "Researcher", "command": "fixture", "use": "Deep research across his vault, notes, meetings, email and memory", "handoff": "Let me look deeper into that" }
+    ],
+    "needs": { "command": "fixture" },
+    "asks": { "listCommand": "fixture", "answerCommand": "fixture", "dryRun": true },
+    "memory": { "dir": "(set by the runner)" },
+    "preload": true,
+    "filler": true,
+    "sources": [
+      { "name": "focus list", "use": "Jon's written focus list. For the newest focuses the god session has raised, also read_session god", "command": "fixture", "preload": true },
+      { "name": "god session log", "use": "The god session's running log of checks and decisions, newest at the end", "command": "fixture" },
+      { "name": "Control scratchpad", "use": "Control's live list of what's in flight and waiting on Jon", "command": "fixture" }
+    ],
+    "paseo": { "hosts": { "main-box": "127.0.0.1:1", "macbook": "127.0.0.1:2" }, "default": "main-box" },
+    "hearing": "His plans are numbered like JON-9122: \"John 9122\" is JON-9122."
+  },
+  "asks": [
+    { "ask_id": "a1a1a1a1a1a1a1a1", "plan": "JON-9101", "kind": "outside_send", "state": "open", "created_at": "2026-11-10T12:50:00Z",
+      "title": "Marketplace API: ask the partner team why our shops show as unauthorised",
+      "question": "May I send this to the marketplace's partner team? Draft: 'We call the shop API with the shop header set; every tool says the shop isn't authorised. How do we get our app authorised for our shops?'",
+      "recommendation": "Send it." },
+    { "ask_id": "b2b2b2b2b2b2b2b2", "plan": "JON-9164", "kind": "access", "state": "open", "created_at": "2026-11-10T10:13:00Z",
+      "title": "Roll out the snapshot fix to the staff runners",
+      "question": "The staff GitHub app lacks Deployments: Read. May Control request it so you can approve it in your GitHub inbox?",
+      "recommendation": "Yes, request it." },
+    { "ask_id": "c3c3c3c3c3c3c3c3", "plan": "JON-9109", "kind": "money", "state": "open", "created_at": "2026-11-10T09:00:00Z",
+      "title": "Restore drill on a scratch database cluster",
+      "question": "Can Control run a restore drill on a scratch database cluster for a few hours, about ten pounds, deleted the same day?",
+      "recommendation": "Yes, run it." },
+    { "ask_id": "d4d4d4d4d4d4d4d4", "plan": "JON-9122", "kind": "process", "state": "open", "created_at": "2026-11-10T08:00:00Z",
+      "title": "Voice shortcuts: try them once on the phone and watch",
+      "question": "Press the Action button on your phone and say one sentence, then run the Tell Control shortcut once on your watch. Reply done when you have.",
+      "recommendation": "Reply done." },
+    { "ask_id": "e5e5e5e5e5e5e5e5", "plan": "JON-9001", "kind": "product", "state": "answered", "created_at": "2026-11-01T08:00:00Z",
+      "title": "An old answered one", "question": "Old?", "recommendation": "Yes." }
+  ],
+  "memory": {
+    "yesterday": "## Call at 22:10\n- Jon decided the restore drill can use a scratch cluster, deleted the same day.\n- Jon listed twelve page design rules from the page review to keep: no nested cards, one frame per page, real data in every panel, no placeholder charts; Control wrote them to the design rules note.\n- Open: the CI speed-up plan JON-9094 report from its lead.\n",
+    "today": "## Call at 09:35\n- Jon said JON-9055 is finished; Control was told.\n- Jon asked to remember: the Cloudflare proxy goes on only after the canary login test passes.\n- Open: Control is looking into what happened to the overnight database audit.\n",
+    "older": { "2026-11-02": "## Call at 18:00\n- Jon chose the green colour for the shop home header.\n" }
+  },
+  "sessions": "On main-box: 52 live, 9 running.\nSeats: control 7abd1f52 running \"Jon's Control — takeover after limit\"; god 4151cb76 idle, 20 min ago \"[Handoff] God session — from dad9a591 (10 Nov, limit)\"; heartbeat 905cf005 idle, 4 min ago \"Control heartbeat\"\nRunning: 5dd56f87 JON-9171 lead: Bring the framed redesign to the shop pages; 2e7baadb JON-9215 finance cut-over task; ed90d9f6 JON-9213 finance cut-over task; 4889ce98 JON-9203 lead: Finance and BD pages people can actually use; 912f0bda JON-9185 global kit fixes; 7d129e8f JON-9186 retire legacy system pages\nIdle plan leads: 22b3980b JON-9094 lead: CI: test runs on idle runners, deploy after a quick check, full suite after; 1c2d3e4f JON-9122 lead: Voice shortcuts on the phone and watch; 3a4b5c6d JON-9126 lead: Database audit: every database mapped with callers and readers\nOther idle sessions: 33\nOn macbook: 7 live, 2 running.\nSeats: taro-twin 957563da running \"Taro Twin\"\nRunning: 03bde79f Sift 2",
+  "tools": {
+    "needs_queue": "(made from the asks by the runner)",
+    "read_session": [
+      { "match": "control", "result": "Jon's Control — takeover after limit (running, on main-box, last active 1 min ago)\nLatest ask: Pick up from the previous Control session, which ran out of context at 01:50. Read the handoff note first.\nLatest reply: Picked up at 01:52. Four plans are queued, JON-9127 to JON-9130. The overnight database audit, JON-9126, finished at 06:10 and its report is on the card.\nSince the ask: 14 tool steps (Bash ×9, Read ×5), last: Bash board show JON-9126" },
+      { "match": "god", "result": "[Handoff] God session — from dad9a591 (10 Nov, limit) (idle, on main-box, last active 20 min ago)\nLatest ask: Jon, by voice: what's running overnight?\nLatest reply: Overnight: the database audit JON-9126 runs with mixed workers, report by 07:30. I check every plan's read each half hour and keep things unstuck.\nEarlier reply: The UI frames plan JON-9171 is in build; two pages done, two in review." },
+      { "match": "9094|ci", "result": "JON-9094 lead: CI: test runs on idle runners, deploy after a quick check, full suite after (idle, on main-box, last active 3 h ago)\nLatest ask: Finish the CI change from the build-speed paper: quick check before deploy, full suite after.\nLatest reply: Both PRs merged at 01:40. Main now deploys after the quick check and runs the full suite after. Nothing waits on Jon.\nSince the ask: 31 tool steps (Bash ×22, Edit ×9), last: Bash gh pr merge 812" },
+      { "match": "9171|ui|redesign|frame", "result": "JON-9171 lead: Bring the framed redesign to the shop pages (running, on main-box, on this turn since 12 min ago)\nLatest ask: Start the four page workers and review each PR.\nNo reply to it yet; still working.\nSince the ask: 8 tool steps (Bash ×6, Read ×2), last: Bash paseo ls --label plan=JON-9171\nEarlier reply: Two pages are done and merged; two are in review." },
+      { "match": "9122|shortcut", "result": "JON-9122 lead: Voice shortcuts on the phone and watch (idle, on main-box, last active 5 h ago)\nLatest reply: Everything is built. Waiting on Jon to press the Action button once and say one sentence, then run the shortcut on his watch; that's the open ask on the card." },
+      { "match": "9126|database|audit", "result": "JON-9126 lead: Database audit: every database mapped with callers and readers (idle, on main-box, last active 6 h ago)\nLatest reply: Done at 06:10: 14 databases mapped, 3 with no readers flagged for retirement. The report is on the card; nothing waits on Jon." },
+      { "match": "sift", "result": "Sift 2 (running, on macbook, on this turn since 16 min ago)\nLatest ask: Set up the voice assistant for a second person on their own box.\nNo reply to it yet; still working.\nSince the ask: 40 tool steps (Bash ×30, Read ×10), last: Bash curl the second box's voice page\nEarlier reply: The second box answers a test call in about a second." }
+    ],
+    "read_source": [
+      { "match": "focus", "result": "# Active work\n\n- **CI speed-ups** (JON-9094): change from the build-speed paper; merged, watch main for a day.\n- **Shop page redesign** (JON-9171): framed layout on every shop page; in build.\n- **Finance database cut-over** (JON-9208): copy data, then switch the web app.\n- **Voice assistant** (JON-9122): faster answers, answering asks by voice." },
+      { "match": "god", "result": "10 Nov 01:30 Checked every plan's read. JON-9126 database audit running, report due 07:30.\n10 Nov 06:15 JON-9126 done; report on the card.\n10 Nov 11:20 JON-9171 two of four pages merged." },
+      { "match": "scratchpad", "result": "## Now (updated 11:27)\n- Database audit JON-9126: done overnight, report on the card.\n- CI speed-ups JON-9094: both PRs merged, watching main.\n- Shop page frames JON-9171: two merged, two in review.\n### Needs you\n1. JON-9101 partner reply: yes to send?\n2. JON-9164 GitHub app permission." }
+    ],
+    "paseo": [
+      { "match": "^ls.*macbook|macbook", "result": "7 live on macbook, 2 running. id | title | model | status | last active\n957563da | Taro Twin | claude/sonnet | running | 0 min ago\n03bde79f | Sift 2 | claude/opus | running | 1 min ago" },
+      { "match": "^ls", "result": "52 live on main-box, 9 running. id | title | model | status | last active\n7abd1f52 | Jon's Control — takeover after limit | claude/opus | running | 1 min ago\n5dd56f87 | JON-9171 lead: Bring the framed redesign to the shop pages | claude/sonnet | running | 2 min ago\n22b3980b | JON-9094 lead: CI: test runs on idle runners | claude/sonnet | idle | 3 h ago\n1c2d3e4f | JON-9122 lead: Voice shortcuts on the phone and watch | claude/sonnet | idle | 5 h ago" },
+      { "match": "logs 03bde79f", "result": "Sift 2 (running, on macbook, on this turn since 16 min ago)\nAsked: Set up the voice assistant for a second person on their own box.\nTools: 40 tool steps (Bash ×30, Read ×10), last: Bash curl the second box's voice page\nSaid: The second box answers a test call in about a second." },
+      { "match": "logs 1c2d3e4f", "result": "JON-9122 lead: Voice shortcuts on the phone and watch (idle, on main-box, last active 5 h ago)\nSaid: Everything is built. Waiting on Jon to press the Action button once and say one sentence, then run the shortcut on his watch." },
+      { "match": "logs", "result": "No session with that id on main-box. Find it with ls first." }
+    ],
+    "sessions": "(the sessions fixture)",
+    "job_status": "Nothing has been handed to a worker in this conversation.",
+    "delegate": "Started: it's on it. Its result will be spoken when it's ready."
+  }
+}

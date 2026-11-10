@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { digestLogs } from "./digest.mjs";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 
@@ -75,20 +76,6 @@ const ago = (when) => {
 };
 const short = (text, n) => { const t = String(text ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? `${t.slice(0, n)}…` : t; };
 
-/** One timeline item as a line a model can read. */
-function logLine(item) {
-  if (item.type === "user_message") return `Asked: ${short(item.text, 500)}`;
-  if (item.type === "assistant_message") return `Said: ${short(item.text, 700)}`;
-  if (item.type === "reasoning") return `Thought: ${short(item.text, 250)}`;
-  if (item.type === "tool_call" && item.agentMessage) return `Message from ${item.agentMessage.sender?.title ?? "a session"}: ${short(item.agentMessage.text, 400)}`;
-  if (item.type === "tool_call") {
-    const d = item.detail ?? {};
-    const what = d.command ?? d.label ?? d.path ?? d.query ?? d.url ?? "";
-    return `Tool ${item.name}${what ? `: ${short(what, 200)}` : ""}${item.status === "failed" ? " (failed)" : ""}`;
-  }
-  return null;
-}
-
 /**
  * The commands asked most, answered over the server's open connection to the daemon: about 0.2 s
  * instead of 1.5 to 4 s for a fresh CLI process. Returns null for anything it doesn't cover.
@@ -121,9 +108,9 @@ async function fast(api, verb, rest, name) {
   if (!agent && verb !== "permit ls") return `No session with id "${plain[0] ?? ""}" on ${name}. Find it with ls first.`;
   if (verb === "logs") {
     const tail = Math.min(40, Math.max(1, Number(flags["--tail"]?.[0]) || 15));
-    const page = await api.agents.ref(agent.id).timeline.refetch({ direction: "tail", limit: tail * 2, projection: "projected" });
-    const lines = page.entries.map((e) => logLine(e.item)).filter(Boolean).slice(-tail);
-    return fit(`${short(agent.title, 90)} (${agent.status}${agent.activeTurn ? `, on this turn since ${ago(agent.activeTurn.startedAt)}` : ""})\n${lines.join("\n") || "Nothing yet."}`, true);
+    // Tool steps collapse to one line per run, so fetch more than the lines shown.
+    const page = await api.agents.ref(agent.id).timeline.refetch({ direction: "tail", limit: Math.min(200, tail * 6), projection: "projected" });
+    return fit(digestLogs(agent, page.entries.map((e) => e.item), tail, name), true);
   }
   if (verb === "inspect") {
     return [`${agent.title} (${agent.id})`, `status ${agent.status}${agent.activeTurn ? `, busy since ${ago(agent.activeTurn.startedAt)}` : ""}`,
