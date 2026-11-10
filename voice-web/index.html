@@ -162,7 +162,7 @@ const empty = $("empty"), button = $("talk"), hint = $("hint"), chip = $("chip")
 const IDLE_HANGUP = 5 * 60_000; // ponytail: a call nobody speaks in for 5 minutes hangs up, so the mic is never left open
 let phase = "off", pc = null, dc = null, micStream = null, micTrack = null, muted = false, ready = false, waiting = [];
 let ping = 0, idleTimer = 0, endAfterSpeech = false, botSpeaking = false, levelCtx = null, micLevel = null, botLevel = null;
-let you = null, youText = "", reply = null, steps = null, working = new Map();
+let you = null, youText = "", reply = null, steps = null, working = new Map(), sender = null, micLost = false;
 const speaker = new Audio(); speaker.autoplay = true; speaker.setAttribute("playsinline", "");
 
 const LABELS = { off: "Ready", connecting: "Connecting", muted: "Not listening", listening: "Listening", hearing: "Hearing you", thinking: "Thinking", speaking: "Speaking" };
@@ -187,12 +187,15 @@ async function connect() {
   audioMode("play-and-record");
   micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
   micTrack = micStream.getAudioTracks()[0];
+  watchMic(micTrack);
+  micLost = micTrack.muted; // already taken by another tab: shown once the call is up
   micTrack.enabled = !muted;
   levelCtx = new (window.AudioContext || window.webkitAudioContext)();
   await levelCtx.resume();
   micLevel = meter(micStream);
   pc = new RTCPeerConnection({ iceServers: [] }); // tailnet only: both ends reach each other directly
   const audio = pc.addTransceiver("audio", { direction: "sendrecv" }); // audio only: no camera, no video
+  sender = audio.sender;
   await audio.sender.replaceTrack(micTrack);
   dc = pc.createDataChannel("chat", { ordered: true });
   dc.onopen = () => {
@@ -233,7 +236,7 @@ function hangUp(text) {
   rtvi("disconnect-bot");
   clearInterval(ping); clearTimeout(idleTimer);
   try { dc?.close(); } catch {} try { pc?.close(); } catch {}
-  pc = null; dc = null; ready = false; waiting = []; endAfterSpeech = false; botSpeaking = false; muted = false;
+  pc = null; dc = null; sender = null; micLost = false; ready = false; waiting = []; endAfterSpeech = false; botSpeaking = false; muted = false;
   micStream?.getTracks().forEach((t) => t.stop()); micStream = null; micTrack = null;
   speaker.srcObject = null;
   levelCtx?.close().catch(() => {}); levelCtx = null; micLevel = botLevel = null;
@@ -242,7 +245,29 @@ function hangUp(text) {
   you = null; reply = null; steps = null;
   set("off", text);
 }
-function listenOrMute() { set(muted ? "muted" : "listening"); }
+function listenOrMute() { if (micLost) return micPaused(); set(muted ? "muted" : "listening"); }
+
+// ---- The phone can take the mic away (another tab or app using it, a call, the screen locking).
+// Then nothing reaches the call, so say so instead of "Listening", and get it back on the next tap.
+const MIC_PAUSED = "Your phone paused the mic. Close other tabs using it, then tap the orb.";
+function micPaused() { set("muted", MIC_PAUSED); chip.textContent = "Mic paused"; }
+function watchMic(track) {
+  track.onmute = () => { if (track !== micTrack) return; micLost = true; micPaused(); };
+  track.onunmute = () => { if (track !== micTrack) return; micLost = false; listenOrMute(); };
+  track.onended = () => { if (track !== micTrack || !pc) return; micLost = true; micPaused(); };
+}
+async function regainMic() {
+  const fresh = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  micStream?.getTracks().forEach((t) => t.stop());
+  micStream = fresh; micTrack = fresh.getAudioTracks()[0]; micTrack.enabled = !muted;
+  watchMic(micTrack);
+  await sender.replaceTrack(micTrack);
+  try { micLevel = meter(fresh); } catch {}
+  micLost = micTrack.muted;
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && pc && (micLost || micTrack?.readyState === "ended")) regainMic().then(listenOrMute).catch(() => micPaused());
+});
 
 // ---- What the call tells us
 function onEvent({ type, data }) {
@@ -388,6 +413,11 @@ button.addEventListener("click", () => {
   if (!pc) { muted = false; connect().catch((e) => hangUp("Couldn't start: " + e.message)); return; }
   if (phase === "connecting") return;
   if (phase === "listening" || phase === "hearing") { muted = true; micTrack.enabled = false; set("muted"); return; }
+  if (micLost || micTrack.readyState === "ended" || micTrack.muted) { // the phone took the mic: ask for it back
+    muted = false;
+    regainMic().then(() => (micLost ? micPaused() : set("listening", "Go ahead, I'm listening"))).catch((e) => { micLost = true; micPaused(); hint.textContent = "Mic unavailable: " + e.message; });
+    return;
+  }
   muted = false; micTrack.enabled = true; awake();
   if (phase === "speaking" || phase === "thinking") rtvi("client-message", { t: "interrupt" });
   set("listening", "Go ahead, I'm listening");
