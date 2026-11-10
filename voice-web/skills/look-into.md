@@ -6,4 +6,4 @@ description: "Look into that", "find out about X", "dig into it": a short read o
 - Say in a few words what you're checking, then carry on the conversation. Don't wait and don't go quiet.
 - When its answer arrives, give the headline in a sentence or two; the person asks for more if they want it.
 - It only reads. If the answer is that something needs doing (a change, a send, a merge), say so and offer to hand it to Control.
-- The God session's notes are never available to you or the look, whatever the request.
+- The vault's God session folder is never available to you or the look, whatever the request.
