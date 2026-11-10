@@ -44,5 +44,12 @@
       "use": "The decision-maker's current focus list and priorities",
       "command": "cat /path/to/focus-list.md"
     }
-  ]
+  ],
+  "paseo": {
+    "hosts": {
+      "main": "127.0.0.1:6767",
+      "laptop": "relay://<the laptop's pairing address>"
+    },
+    "default": "main"
+  }
 }

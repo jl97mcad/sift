@@ -23,3 +23,23 @@ assert.ok(!looksUnfinished("What needs me?"));
 assert.ok(!looksUnfinished("What is this for?"));
 assert.ok(!looksUnfinished("Turn it on."));
 console.log("ok");
+
+// Paseo CLI by voice: reads run, actions wait for a yes, the rest is refused.
+import { plan, skills, skill, words } from "./tools.mjs";
+const cfg = { person: "Alex", paseo: { hosts: { main: "127.0.0.1:6767" } } };
+assert.deepEqual(words(`send abc "hi there" --x`), ["send", "abc", "hi there", "--x"]);
+assert.deepEqual(plan(cfg, { command: "ls" }).args, ["--host", "127.0.0.1:6767", "--no-color", "ls", "-g"]);
+assert.deepEqual(plan(cfg, { command: "paseo agent logs abc -f --tail 500" }).args.slice(3), ["logs", "abc", "--tail", "40"]);
+assert.deepEqual(plan(cfg, { command: "send abc hello" }).args.slice(3), ["send", "abc", "hello", "--no-wait"]);
+assert.ok(plan(cfg, { command: "delete abc" }).refused);
+assert.ok(plan(cfg, { command: "archive abc" }).refused);
+assert.ok(plan(cfg, { command: "run 'do a thing'" }).refused);
+assert.ok(plan(cfg, { command: "schedule delete x", confirmed: true }).refused);
+assert.ok(plan(cfg, { command: "stop abc" }).refused); // no yes yet
+assert.ok(plan(cfg, { command: "stop --all", confirmed: true }).refused);
+assert.deepEqual(plan(cfg, { command: "stop abc", confirmed: true }).args.slice(3), ["stop", "abc"]);
+assert.ok(plan(cfg, { command: "ls --host evil:1" }).refused);
+assert.ok(plan(cfg, { command: "ls", host: "nope" }).refused);
+assert.ok(skills({}).some((s) => s.name === "paseo" && s.description));
+assert.ok(skill({}, { name: "catch-up" }).includes("needs_queue"));
+console.log("tools ok");

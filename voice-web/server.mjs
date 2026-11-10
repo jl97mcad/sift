@@ -11,15 +11,21 @@ import { writeFile, chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isPhantom, looksUnfinished, pieces, plain, progressLine, settledLength, speakPiece, stepLabel, transcribe } from "./speech.mjs";
-import { respond, summarise, workersOf } from "./front.mjs";
+import { respond, summarise, systemPrompt, toolsFor, workersOf } from "./front.mjs";
+import { paseo, skill } from "./tools.mjs";
 
 const PORT = Number(process.env.PORT ?? 8771);
+// The Pipecat bot (pipecat/bot.py): the page's WebRTC offer goes to it; it calls the tools on BOT_PORT.
+const PIPECAT = process.env.PIPECAT_URL ?? "http://127.0.0.1:8774";
+const BOT_PORT = Number(process.env.BOT_PORT ?? 8773); // 127.0.0.1 only and never served on the tailnet
 const MAX_AUDIO = 20 * 1024 * 1024;
 const config = JSON.parse(await readFile(new URL("./config.json", import.meta.url), "utf8").catch(() =>
   readFile(new URL("./config.example.json", import.meta.url), "utf8")));
 const page = await readFile(new URL("./index.html", import.meta.url));
 const LOCAL = "tcp://127.0.0.1:6767";
-const clients = new Map(); // one Paseo connection per daemon, opened on first use
+const clients = new Map(); // one Paseo connection per daemon, opened on first use and kept open
+/** The open connection for a Paseo host address; a bare host:port means TCP. */
+const open = (address) => daemon(/^\w+:\/\//.test(address) ? address : `tcp://${address}`);
 
 /**
  * A Paseo daemon by any address the Paseo CLI takes: host:port, tcp://, ws://, or a relay://
@@ -81,6 +87,20 @@ let conversation = Promise.resolve(); // one turn or job summary at a time touch
 const queues = new Map(); // each worker session takes one task at a time
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const serial = (fn) => (conversation = conversation.then(fn, fn));
+
+const bots = new Set(); // open Pipecat calls; while one is open, news is spoken inside the call
+
+/** News for the person: spoken inside an open call, or as a clip the page plays when no call is open. */
+async function tell(text) {
+  if (bots.size) { toBots({ type: "progress", text }); return broadcast({ type: "say", text }); }
+  broadcast({ type: "say", text, audio: await voice(text) });
+}
+function toBots(event) {
+  const line = `data: ${JSON.stringify(event)}\n\n`;
+  for (const bot of bots) {
+    try { bot.write(line); } catch { bots.delete(bot); }
+  }
+}
 
 function broadcast(event) {
   const line = `data: ${JSON.stringify(event)}\n\n`;
@@ -240,16 +260,14 @@ async function run(job) {
           if (step && step !== "Thinking" && Date.now() - job.started > 20_000 && Date.now() - lastNews > 30_000 * (told + 1)) {
             told += 1;
             lastNews = Date.now();
-            const line = `${job.to[0].toUpperCase()}${job.to.slice(1)} is ${step.replace(/^\w/, (c) => c.toLowerCase())}.`;
-            broadcast({ type: "say", text: line, audio: await voice(line) });
+            await tell(`${job.to[0].toUpperCase()}${job.to.slice(1)} is ${step.replace(/^\w/, (c) => c.toLowerCase())}.`);
           }
         }
         job.reply = after.filter((item) => item.type === "assistant_message" && item.text).map((item) => item.text).join("\n\n");
         // One spoken heads-up per step that runs long, so silence never means "stuck?".
         if (!done && !warned && Date.now() - stepSince > 90_000) {
           warned = true;
-          const line = `${job.to}: ${progressLine(job.steps.at(-1), (Date.now() - stepSince) / 1000)}`;
-          broadcast({ type: "say", text: line, audio: await voice(line) });
+          await tell(`${job.to}: ${progressLine(job.steps.at(-1), (Date.now() - stepSince) / 1000)}`);
         }
       }
       if (done) break;
@@ -266,6 +284,8 @@ async function run(job) {
 
 /** Speaks a finished job's result: a short summary, or an honest one-line fallback. */
 async function announce(job) {
+  // An open call speaks it in its own words and keeps the answer for follow-ups.
+  if (bots.size) return toBots({ type: "finished", to: job.to, task: job.task, status: job.status, reply: job.reply.slice(0, 3000) });
   await serial(async () => {
     const text = (await summarise(config, history, job).catch(() => "")) || fallbackLine(job);
     broadcast({ type: "say", text, audio: await voice(text) });
@@ -324,6 +344,7 @@ async function turn(request, response, typed) {
           const lines = calls.map(({ to }) => workers.find((w) => w.name === to)?.handoff ?? `I'll ask ${to ?? "the team"}`);
           return `${[...new Set(lines)].join(", and ")}. I'll come back to you when I hear.`;
         },
+        paseo: (args) => paseo(config, args, open), skill: (args) => skill(config, args),
         end_conversation: () => { emit({ type: "end" }); return "Ended. The phone stops listening after your goodbye."; } }, (delta) => {
         text += delta;
         emit({ type: "text", text });
@@ -380,6 +401,12 @@ createServer(async (request, response) => {
       request.on("close", () => { clearInterval(ping); listeners.delete(response); });
       return;
     }
+    // The call itself: the page's WebRTC offer (and its ICE candidates) go to the Pipecat bot.
+    if ((request.method === "POST" || request.method === "PATCH") && request.url === "/api/offer") {
+      const answer = await fetch(`${PIPECAT}/api/offer`, { method: request.method, headers: { "Content-Type": "application/json" }, body: await body(request), signal: AbortSignal.timeout(20_000) })
+        .catch((error) => ({ ok: false, status: 502, text: async () => JSON.stringify({ error: `The voice engine isn't answering: ${error.message}` }) }));
+      return send(response, answer.status ?? (answer.ok ? 200 : 502), await answer.text(), "application/json; charset=utf-8"); // already JSON
+    }
     if (request.method === "POST" && request.url === "/api/turn") return await turn(request, response);
     if (request.method === "POST" && request.url === "/api/text") {
       const { text } = JSON.parse((await body(request)).toString() || "{}");
@@ -398,3 +425,44 @@ createServer(async (request, response) => {
     if (!response.headersSent) send(response, 500, { error: error.message ?? String(error) });
   }
 }).listen(PORT, "127.0.0.1", () => console.log(`Voice assistant for ${config.person} on http://127.0.0.1:${PORT}`));
+
+// Connect to every Paseo host at start, so the first question doesn't wait for a handshake.
+for (const address of Object.values(config.paseo?.hosts ?? {})) open(address).catch((error) => console.error(`Paseo host ${address.replace(/\?.*$/, "")}: ${error.message}`));
+
+// ---- The Pipecat bot's side door: tools, its setup and the news feed. 127.0.0.1 only, never on the tailnet.
+const botTools = {
+  sessions, read_session: readSession, read_source: readSource, needs_queue: needsQueue, job_status: jobStatus,
+  delegate: (args) => delegate(args, args?.task ?? ""), paseo: (args) => paseo(config, args, open), skill: (args) => skill(config, args),
+};
+createServer(async (request, response) => {
+  try {
+    if (request.method === "GET" && request.url === "/bot/setup") {
+      // Earlier work this server has seen, so a new call can pick up "how's that going?".
+      const earlier = jobs.length ? `\n\nWork handed off earlier today (job_status has the latest):\n${jobStatus()}` : "";
+      return send(response, 200, { person: config.person, assistant: config.assistant ?? "", timezone: config.timezone, prompt: systemPrompt(config) + earlier, tools: toolsFor(config) });
+    }
+    if (request.method === "GET" && request.url === "/bot/events") {
+      response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
+      response.write(": hello\n\n");
+      bots.add(response);
+      const ping = setInterval(() => response.write(": ping\n\n"), 25_000);
+      request.on("close", () => { clearInterval(ping); bots.delete(response); });
+      return;
+    }
+    const tool = request.method === "POST" && request.url.match(/^\/bot\/tool\/([a-z_]+)$/);
+    if (tool) {
+      const handler = botTools[tool[1]];
+      if (!handler) return send(response, 404, { result: `Unknown tool ${tool[1]}.` });
+      let args = {};
+      try { args = JSON.parse((await body(request)).toString() || "{}"); } catch {}
+      const started = Date.now();
+      const result = String(await handler(args));
+      console.log(`tool ${tool[1]} ${JSON.stringify(args).slice(0, 200)} -> ${result.length} chars in ${Date.now() - started} ms`);
+      return send(response, 200, { result });
+    }
+    send(response, 404, { error: "Not found" });
+  } catch (error) {
+    console.error(error);
+    if (!response.headersSent) send(response, 500, { result: `That failed: ${error.message ?? error}` });
+  }
+}).listen(BOT_PORT, "127.0.0.1", () => console.log(`Bot tools on http://127.0.0.1:${BOT_PORT}`));

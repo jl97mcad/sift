@@ -1,0 +1,16 @@
+# The voice call engine (bot.py). server.mjs (sift-voice.service) serves the page and owns the tools.
+[Unit]
+Description=Voice front door: Pipecat call engine (127.0.0.1 only)
+After=network-online.target sift-voice.service
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/sift-voice/voice-web/pipecat
+ExecStart=/opt/sift-voice/pipecat-venv/bin/python bot.py -t webrtc --host 127.0.0.1 --port 8774
+Environment=OPENROUTER_KEY_FILE=/etc/sift-voice/openrouter-key
+Environment=BOT_TOOLS=http://127.0.0.1:8773
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
