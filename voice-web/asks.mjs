@@ -91,6 +91,14 @@ export function notHeard(answer, heard) {
   return wordsOf(answer).filter((w) => !have.has(w) && !NUMBER_WORDS.has(w) && !/^\d+$/.test(w) && !/^[a-z]{2,10}\d+$/.test(w));
 }
 
+/** A clear yes ("yes", "go ahead", "record it"), with no "no" or "don't" in it. */
+export function clearYes(text) {
+  const t = ` ${String(text ?? "").toLowerCase().replace(/[^a-z' ]+/g, " ")} `;
+  const yes = / (yes|yeah|yep|yup|go ahead|go for it|do it|record it|confirm|confirmed|correct|that's right|right|sure|please|ok|okay) /.test(t);
+  const no = / (no|nope|don't|do not|dont|not|wait|hang on|hold on|stop|cancel|actually|change) /.test(t);
+  return yes && !no;
+}
+
 const short = (text, n) => { const t = String(text ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? `${t.slice(0, n)}…` : t; };
 const same = (a, b) => String(a).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() === String(b).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
@@ -114,7 +122,7 @@ export function run(command, input, timeoutMs = 45_000) {
  * The answer_ask tool. deps (for tests): list() gives asks.json text, write(argv) runs the write,
  * log(line) records what happened, now() the time.
  */
-export async function answerAsk(config, { plan, answer, confirmed, which, _heard: heard } = {}, deps = {}) {
+export async function answerAsk(config, { plan, answer, confirmed, which, _heard: heard, _turn: turn, _last: last } = {}, deps = {}) {
   const person = config.person || "the person";
   const list = deps.list ?? (async () => {
     const r = await run(config.asks.listCommand, "", 20_000);
@@ -144,8 +152,15 @@ export async function answerAsk(config, { plan, answer, confirmed, which, _heard
   const title = short(ask.title || ask.question, 140);
   const before = pending.get(ask.ask_id);
   const fresh = before && now() - before.at < READBACK_MINUTES * 60_000 && same(before.answer, words);
+  // The yes has to come from the person after they heard the read-back: a later turn, and a clear yes.
+  if (confirmed === true && fresh && turn !== undefined && !(Number(turn) > Number(before.turn ?? -1))) {
+    return `Not recorded: ${person} hasn't answered the read-back yet. Speak it now and wait for their reply; call with confirmed true only in a later turn, after a clear yes.`;
+  }
+  if (confirmed === true && fresh && last !== undefined && !clearYes(last)) {
+    return `Not recorded: "${short(last, 120)}" isn't a clear yes to the read-back. Ask again, or leave it.`;
+  }
   if (confirmed !== true || !fresh) {
-    pending.set(ask.ask_id, { answer: words, at: now() });
+    pending.set(ask.ask_id, { answer: words, at: now(), turn });
     const serious = SERIOUS.has(ask.kind);
     const lead = confirmed === true ? "Not recorded yet: that yes didn't follow a read-back of these exact words. Read this back first. " : "";
     return `${lead}Nothing is written yet. Speak this read-back and wait for a clear yes: "Recording your answer to ${title}: '${words}'. ${consequence(ask)}${consequence(ask) ? " " : ""}Shall I?"` +

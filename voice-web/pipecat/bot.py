@@ -237,6 +237,8 @@ async def bot(runner_args: RunnerArguments):
             said = [m["content"] for m in context.get_messages() if m.get("role") == "user" and isinstance(m.get("content"), str)
                     and not m["content"].startswith("(")]
             args["_heard"] = " ".join(said[-3:])
+            args["_last"] = said[-1] if said else ""
+            args["_turn"] = len(said)  # a yes must come in a later turn than its read-back
         try:
             async with http.post(f"{TOOLS}/bot/tool/{name}", json=args) as r:
                 result = (await r.json()).get("result", "")

@@ -60,7 +60,7 @@
       { "role": "assistant", "content": "Two big ones: the marketplace partner reply on JON-9101 wants a yes to send, and JON-9109 wants to run a restore drill on a scratch database, about ten pounds. Want the others?" }],
     "say": "Yes to both of those.",
     "expect": { "count": { "answer_ask": 2 }, "confirmedNever": true }, "banned": ["delegate"],
-    "mention": ["shall i|ok to record|want me to|confirm|go ahead\\?"] },
+    "mention": ["shall i|ok to record|want me to|confirm|go ahead\\?|happy with|both\\?|right\\?"] },
   { "id": "consider-done", "from": "call 09:36: \"Consider JON-4122 done.\" (it delegated to Control)",
     "say": "Consider John ninety-one twenty-two done.",
     "expect": { "any": ["answer_ask"], "confirmedNever": true }, "banned": ["delegate"],
@@ -114,5 +114,16 @@
       { "role": "assistant", "content": "Morning, Jon." }],
     "say": "Catch me up with the latest, what's going on with my work right now?",
     "expect": { "anyOrNone": ["catch_up", "skill"] }, "banned": ["delegate"],
-    "mention": ["9101|partner|marketplace|github|9164|restore|running|audit"] }
+    "mention": ["9101|partner|marketplace|github|9164|restore|running|audit"] },
+  { "id": "own-readback-then-yes", "from": "test call 13:37: it made up its own read-back, then on the yes chained a read-back and a write in one turn",
+    "history": [
+      { "role": "user", "content": "Answer John ninety-one sixty-four: yes, request it." },
+      { "role": "assistant", "content": "Let me read that back: yes to JON-9164, Control requests the permission. Is that right?" }],
+    "say": "Yes, record it.",
+    "expect": { "any": ["answer_ask"], "noWrite": true }, "banned": ["delegate"],
+    "mention": ["shall i|recording your answer|confirm|read"] },
+  { "id": "remember-this", "from": "test call 13:43: \"Please remember that...\" (it searched memory and said it couldn't write)",
+    "say": "Please remember that the shop header goes green on Friday.",
+    "expect": { "anyOrNone": ["stay_quiet"] }, "banned": ["delegate", "recall", "answer_ask"],
+    "mention": ["remember|noted|got it|will do"] }
 ]

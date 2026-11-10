@@ -43,7 +43,7 @@ export function toolsFor(config) {
     ...(known.length ? [{ type: "function", function: { name: "skill", description: `Load a how-to before doing a matching request. ${known.map((k) => `${k.name}: ${k.description}`).join(". ")}`, parameters: { type: "object", properties: { name: { type: "string", enum: known.map((k) => k.name) } }, required: ["name"] } } }] : []),
     { type: "function", function: { name: "job_status", description: "What the workers are doing now and what they've finished, with their replies.", parameters: { type: "object", properties: {} } } },
     { type: "function", function: { name: "needs_queue", description: "The open questions waiting for the person's answer, newest first.", parameters: { type: "object", properties: {} } } },
-    ...(config.preload ? [{ type: "function", function: { name: "catch_up", description: `Everything for "catch me up" in one call, read fresh: the needs queue, the live sessions${(config.sources ?? []).some((s) => s.preload) ? ` and ${(config.sources ?? []).filter((s) => s.preload).map((s) => s.name).join(", ")}` : ""}.`, parameters: { type: "object", properties: {} } } }] : []),
+    ...(config.preload ? [{ type: "function", function: { name: "catch_up", description: `Only when they ask for the latest or a refresh, or there's no recent already-read block: everything for "catch me up" in one call, read fresh: the needs queue, the live sessions${(config.sources ?? []).some((s) => s.preload) ? ` and ${(config.sources ?? []).filter((s) => s.preload).map((s) => s.name).join(", ")}` : ""}.`, parameters: { type: "object", properties: {} } } }] : []),
     ...(answering(config) ? [{ type: "function", function: { name: "answer_ask", description: "Record the person's own spoken answer to one of their open asks. First call (confirmed false) writes nothing and returns a read-back to speak; only after a clear yes to that read-back, call again with confirmed true.", parameters: { type: "object", properties: {
       plan: { type: "string", description: "The ask's plan number, e.g. JON-4119." },
       answer: { type: "string", description: "The person's exact words, verbatim from what they said: never paraphrased, never inferred." },
@@ -74,7 +74,7 @@ How to talk:
 
 How to work:
 - Their words reach you through speech recognition, which mishears names. Match what you hear to the names you know: session titles, plan numbers, and Paseo (heard as "Parseo" or "Parcel").${config.hearing ? ` ${config.hearing}` : ""}
-- If your instructions have an "Already read for this call" block, answer "what needs me", "what's running" and what's on any source it includes straight from it, with no tool call. It's a snapshot from the start of the call: when they ask for the latest or for detail, or the call has run a while, read again.
+- If your instructions have an "Already read for this call" block, answer "what needs me", "what's running" (the list of sessions) and what's on any source it includes straight from it, with no tool call. What one session is doing or has said isn't in it: read that session. Don't call needs_queue or catch_up for these unless they ask for the latest or a refresh, or the block is more than about ten minutes old. It's a snapshot from the start of the call: when they ask for the latest or for detail, or the call has run a while, read again.
 - Otherwise look things up yourself first: sessions, read_session${(config.sources ?? []).length ? ", read_source" : ""} and needs_queue answer in seconds. Use them for "what's X doing", "where is Y up to", "what's on the focus list". Never say you can't see something you can read.
 ${config.filler ? `- Don't announce a lookup ("let me check"); call the tool straight away. A short "one sec" is spoken for you while it runs.\n` : ""}- Several lookups for one question: ask for them all in the same response, so they run at once.${config.preload ? ` For "catch me up" with fresh data, call catch_up once instead of several lookups.` : ""}
 ${Object.keys(hostsOf(config)).length ? `- The paseo tool runs the Paseo CLI (hosts: ${Object.keys(hostsOf(config)).join(", ")}): find a session with ls, see what it's doing with logs, message one with send. Ids come from ls; never guess one.\n` : ""}${skills(config).length ? `- Skills are short how-tos. Before a request that matches one, load it with the skill tool once per conversation, then follow it (never mention loading one):\n${skills(config).map((k) => `  - ${k.name}: ${k.description}`).join("\n")}\n` : ""}- Delegate only for actions, or when reading isn't enough to answer: call delegate at once with the task in their words, choosing the session that fits. In the same turn, say naturally who you've asked and that you'll come back to them, for example "Let me look deeper into that" or "I'll ask Control". If it may take a while, say roughly how long.
@@ -87,14 +87,16 @@ Staying accurate:
 - State only what a tool result, the already-read block or this conversation says. When it matters, say where a fact came from ("Control's last reply says...", "your focus list says...").
 - Don't link facts the data doesn't link. Two sessions' titles both mentioning a limit doesn't mean one caused the other; say each as it is, or just one.
 - If you don't have it, say "I don't have that" and offer to look or ask; never guess or fill a gap.${recalling(config) ? `
-- "What did we say about X", "remind me what I decided", "do you have the things I mentioned": your notes from earlier calls are in the already-read block; for anything older or not there, call recall. Say what you found and from when.` : ""}${answering(config) ? `
+- "What did we say about X", "remind me what I decided", "do you have the things I mentioned": your notes from earlier calls are in the already-read block; for anything older or not there, call recall. Say what you found and from when.${config.memory?.dir ? `
+- "Remember that...": a note of this call, with what they asked you to remember, is written when the call ends. Just say you'll remember it; no tool.` : ""}` : ""}${answering(config) ? `
 
 Answering their open asks (answer_ask):
-- Only for ${config.person}'s own spoken answer to an open ask in the needs queue. Never infer or suggest an answer, and never record one they didn't say.
-- First call answer_ask with their exact words, verbatim (all of what they said in answer, not a summary or a single word), and confirmed false. It writes nothing and gives you a read-back: speak it, naming what will happen, and wait.
+- These rules are all you need: don't load the answer-asks skill first.
+- Only for ${config.person}'s own spoken answer to an open ask in the needs queue, when it's clear which ask they're answering: they name it, or you just read it to them. A remark, a note or an instruction that isn't a reply to an ask is never an answer. Never infer or suggest an answer, and never record one they didn't say.
+- First call answer_ask with their exact words, verbatim (all of what they said in answer, not a summary or a single word), and confirmed false. It writes nothing and gives you a read-back: speak it, naming what will happen, and wait. Never make up a read-back of your own; always get it from answer_ask.
 - Only after a clear yes to that read-back, call again with the same plan and words and confirmed true. A vague "yeah" while talking about something else is not a yes. For sends outside the company, money, access, signatures or production writes, the read-back must say what will happen and needs a clear yes.
 - "Yes to both" or "yes to all": call answer_ask for each ask (confirmed false), read each one back by name with what it lets happen, and get a yes for each (a clear "yes, both" to those read-backs counts for both).
-- If the write fails, say so; never retry it yourself.` : ""}
+- If the write fails, say so; never retry it yourself. If it was a dry run, say it was only a test and nothing was recorded.` : ""}
 - Only bring up what they asked about, results of work they asked for, and the needs queue. Don't volunteer other news.
 - General questions and follow-ups about what was said: answer yourself.
 - If the words weren't meant for you (background talk, a cough, a fragment, thinking aloud), call stay_quiet.
@@ -114,6 +116,7 @@ export async function respond(config, history, userText, handlers, onText, { too
     let gap = spokeThisTurn; // a later round of this turn starts a new sentence
     const { text, calls } = await stream(config, history, (delta) => { onText(gap ? ` ${delta}` : delta); gap = false; }, tools, context);
     if (text) spokeThisTurn = true;
+    if (!text && !calls.length) break; // an empty round: the answer below is made without tools
     if (calls.some((call) => ["stay_quiet", "end_conversation"].includes(call.function.name))) quiet = true;
     if (!tools) { history.push({ role: "assistant", content: text }); break; } // no tools offered: never run any
     history.push({ role: "assistant", content: text || null, ...(calls.length ? { tool_calls: calls } : {}) });

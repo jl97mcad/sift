@@ -139,6 +139,11 @@ function delegate({ task, to, plan }, heard) {
   const workers = workersOf(config);
   const worker = workers.find((w) => w.name === to) ?? (workers.length === 1 ? workers[0] : null);
   if (!worker) return `There's no session called "${to}". Choose one of: ${workers.map((w) => w.name).join(", ")}.`; // never the wrong one
+  // SIFT_DRY_DELEGATE=1 (for test calls): nothing is handed to anyone; the hand-off is only logged.
+  if (/^(1|true|yes)$/i.test(process.env.SIFT_DRY_DELEGATE ?? "")) {
+    console.log(`delegate DRY RUN, nothing sent: to ${worker.name}${plan ? ` (${plan})` : ""}: ${String(task ?? "").slice(0, 200)}`);
+    return `Started: ${worker.name} is on it. Its result will be spoken when it's ready.`;
+  }
   const job = { id: `job-${Date.now()}`, task: task?.trim() || heard, to: worker.lead && plan ? `the ${plan} lead` : worker.name, worker, plan, status: "queued", steps: [], reply: "", started: Date.now() };
   jobs.push(job);
   jobs.splice(0, Math.max(0, jobs.length - 20));
@@ -445,7 +450,10 @@ async function turn(request, response, typed) {
           return `${[...new Set(lines)].join(", and ")}. I'll come back to you when I hear.`;
         },
         paseo: (args) => paseo(config, args, open), skill: (args) => skill(config, args),
-        catch_up: catchUp, answer_ask: (args) => answerAskTool({ ...args, _heard: `${history.filter((m) => m.role === "user" && !String(m.content).startsWith("(")).slice(-3, -1).map((m) => m.content).join(" ")} ${heard}` }),
+        catch_up: catchUp, answer_ask: (args) => {
+          const said = history.filter((m) => m.role === "user" && !String(m.content).startsWith("(")).map((m) => String(m.content));
+          return answerAskTool({ ...args, _heard: said.slice(-3).join(" "), _last: said.at(-1) ?? "", _turn: said.length });
+        },
         recall: (args) => recall(config, args),
         end_conversation: () => { emit({ type: "end" }); return "Ended. The phone stops listening after your goodbye."; } }, (delta) => {
         text += delta;
@@ -574,7 +582,7 @@ createServer(async (request, response) => {
       try { args = JSON.parse((await body(request)).toString() || "{}"); } catch {}
       const started = Date.now();
       const result = String(await handler(args));
-      const { _heard, ...shown } = args;
+      const { _heard, _last, _turn, ...shown } = args;
       console.log(`tool ${tool[1]} ${JSON.stringify(shown).slice(0, 200)} -> ${result.length} chars in ${Date.now() - started} ms`);
       return send(response, 200, { result });
     }

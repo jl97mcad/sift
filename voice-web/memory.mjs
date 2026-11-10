@@ -71,7 +71,8 @@ export async function recall(config, { query } = {}) {
   const q = String(query ?? "").replace(/^[\s-]+/, "").trim().slice(0, 300); // never read as a flag
   if (!q) return "Say what to look for.";
   const deja = config.memory?.dejaCommand
-    ? run(config.memory.dejaCommand, q, (config.memory.dejaTimeoutSeconds ?? 20) * 1000).then((r) => (r.code === 0 ? digestDeja(r.out) : `unavailable: deja ${short(r.err || `exit ${r.code}`, 120)}`))
+    ? run(config.memory.dejaCommand, q, (config.memory.dejaTimeoutSeconds ?? 20) * 1000).then((r) => (r.code === 0 ? digestDeja(r.out) || "Nothing found."
+      : `unavailable: deja ${/timed out/.test(r.err) ? `didn't answer within ${config.memory.dejaTimeoutSeconds ?? 20} s` : short(r.err.trim().split("\n").at(-1) || `exit ${r.code}`, 120)}`))
     : Promise.resolve("");
   const local = remembering(config) ? scoreMemory(await files(config.memory.dir), q) : [];
   const lines = [];
@@ -96,7 +97,12 @@ export function transcriptText(turns, person = "Person") {
 }
 
 export const SUMMARY_PROMPT = (person) => `You write a short memory note of a voice call between ${person} and their assistant, for the assistant to read at the next call.
-Write 5 to 10 bullet lines starting "- ". Cover, in this order and only if present: decisions ${person} made; asks answered; things ${person} asked to remember; open threads to pick up. Say who or what each is about (plan numbers, names of sessions).
+Write up to 10 bullet lines starting "- " (fewer for a short call; never pad, and write nothing at all if nothing in the call is worth keeping). Cover, only if present:
+- Decisions ${person} made about their work.
+- Open asks answered: only those listed below as answered through the tool, never questions the assistant answered.
+- Things ${person} explicitly asked the assistant to remember.
+- Open threads to pick up next time.
+Name what each is about (plan numbers, session names). Leave out greetings, small talk and anything said to someone else in the room.
 Use only what the transcript says. Never include passwords, keys, tokens or other secrets. No heading, no preamble.`;
 
 /** One cheap model call: the call's summary as bullet lines, or "" when there was nothing to summarise. */

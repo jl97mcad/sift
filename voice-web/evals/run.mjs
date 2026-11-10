@@ -60,12 +60,12 @@ const handlersFor = (calls, heard) => {
     delegate: () => fixtures.tools.delegate,
     skill: (args) => tools.skill(config, args),
     catch_up: () => `Needs Jon:\n${needsText}\n\nSessions:\n${fixtures.sessions}\n\nfocus list:\n${source("focus list")}`,
-    answer_ask: (args) => (asks ? asks.answerAsk({ ...config, asks: { ...config.asks, dryRun: true } }, { ...args, _heard: heard }, { list: askList, write: noWrite, log: () => {} }) : "Unknown tool."),
+    answer_ask: (args) => (asks ? asks.answerAsk({ ...config, asks: { ...config.asks, dryRun: true } }, { ...args, ...heard }, { list: askList, write: noWrite, log: () => {} }) : "Unknown tool."),
     recall: (args) => (memory ? memory.recall(config, args) : "Unknown tool."),
     stay_quiet: () => "Staying quiet.",
     end_conversation: () => "Ended.",
   };
-  return Object.fromEntries(Object.entries(h).map(([name, fn]) => [name, async (args) => { calls.push({ name, args }); return fn(args ?? {}); }]));
+  return Object.fromEntries(Object.entries(h).map(([name, fn]) => [name, async (args) => { const call = { name, args }; calls.push(call); call.result = String(await fn(args ?? {})); return call.result; }]));
 };
 
 /** Every check a case asks for, each as [passed, label]. */
@@ -78,9 +78,10 @@ function score(c, calls, rounds, text) {
   if (e.anyOrNone) checks.push([names.every((n) => e.anyOrNone.includes(n)), `only ${e.anyOrNone.join("|")} or none`]);
   if (e.parallel) checks.push([rounds.some((r) => r.filter((n) => !["skill"].includes(n)).length >= e.parallel), `${e.parallel} lookups at once`]);
   for (const [name, n] of Object.entries(e.count ?? {})) checks.push([names.filter((x) => x === name).length >= n, `${n}× ${name}`]);
-  const confirmed = calls.filter((x) => x.name === "answer_ask" && x.args?.confirmed === true).length;
-  if (e.confirmedNever) checks.push([confirmed === 0, "no write without a yes"]);
-  if (e.confirmedOnce) checks.push([confirmed >= 1, "writes after the yes"]);
+  // A write is a confirmed call the server carried out (a dry run here); refused confirms don't count.
+  const wrote = calls.filter((x) => x.name === "answer_ask" && /^(Recorded|Dry run)/.test(x.result ?? "")).length;
+  if (e.confirmedNever || e.noWrite) checks.push([wrote === 0, "no write without a yes"]);
+  if (e.confirmedOnce) checks.push([wrote >= 1, "writes after the yes"]);
   for (const b of c.banned ?? []) checks.push([!names.includes(b), `no ${b}`]);
   for (const m of c.mention ?? []) checks.push([new RegExp(m, "i").test(text), `says /${m}/`]);
   for (const m of c.notSay ?? []) checks.push([!new RegExp(m, "i").test(text), `never says /${m}/`]);
@@ -90,7 +91,9 @@ function score(c, calls, rounds, text) {
 
 async function runCase(c) {
   asks?.forget?.();
-  for (const p of c.prime ?? []) await asks?.answerAsk({ ...config, asks: { ...config.asks, dryRun: true } }, p, { list: askList, write: noWrite, log: () => {} });
+  const said = [...(c.history ?? []).filter((m) => m.role === "user").map((m) => m.content), c.say];
+  // A read-back given in an earlier turn of the case's history.
+  for (const p of c.prime ?? []) await asks?.answerAsk({ ...config, asks: { ...config.asks, dryRun: true } }, { ...p, _turn: said.length - 1 }, { list: askList, write: noWrite, log: () => {} });
   const calls = [];
   const history = structuredClone(c.history ?? []);
   const at = history.length;
@@ -98,7 +101,7 @@ async function runCase(c) {
   const started = Date.now();
   try {
     await Promise.race([
-      front.respond(config, history, c.say, handlersFor(calls, [...(c.history ?? []).filter((m) => m.role === "user").map((m) => m.content), c.say].slice(-3).join(" ")), (d) => (text += d), { context }),
+      front.respond(config, history, c.say, handlersFor(calls, { _heard: said.slice(-3).join(" "), _last: c.say, _turn: said.length }), (d) => (text += d), { context }),
       new Promise((_, no) => setTimeout(() => no(new Error("timed out")), 90_000)),
     ]);
   } catch (error) { text += ` [error: ${error.message}]`; }
