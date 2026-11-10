@@ -309,7 +309,7 @@ async def bot(runner_args: RunnerArguments):
     started = datetime.now(timezone.utc)
     call_id = uuid.uuid4().hex  # ties this call's answered asks to its note
 
-    preloaded = False
+    preloaded = connected_once = False
 
     def add_preload(block: str):
         """Puts the already-read block into the system message once, wherever the conversation is."""
@@ -325,8 +325,9 @@ async def bot(runner_args: RunnerArguments):
 
     @transport.event_handler("on_client_connected")
     async def _connected(_t, _c):
-        nonlocal started
-        if not preloaded:  # a reconnect keeps the call's first start time
+        nonlocal started, connected_once
+        if not connected_once:  # a reconnect keeps the call's first start time
+            connected_once = True
             started = datetime.now(timezone.utc)
         logger.info("SIFT call connected")
         workers.extend([asyncio.create_task(follow()), asyncio.create_task(speak_news())])

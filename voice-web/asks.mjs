@@ -79,7 +79,7 @@ export function answerArgv(ask, answer) {
   return ["board", "answered", ask.plan, "--ask-id", ask.ask_id, "--text", answer, "--summary", summaryFor(answer), "--action", "answer"];
 }
 
-const PLAN_WORDS = new Set("jon john plan number".split(" ")); // numbers said aloud are in what was heard, so they're checked like any word
+const PLAN_WORDS = new Set(["jon", "john"]); // numbers said aloud are in what was heard, so they're checked like any word
 const wordsOf = (text) => String(text ?? "").toLowerCase().replace(/[’']/g, "").split(/[^a-z0-9]+/).filter(Boolean);
 
 /**
