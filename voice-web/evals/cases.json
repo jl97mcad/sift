@@ -125,5 +125,12 @@
   { "id": "remember-this", "from": "test call 13:43: \"Please remember that...\" (it searched memory and said it couldn't write)",
     "say": "Please remember that the shop header goes green on Friday.",
     "expect": { "anyOrNone": ["stay_quiet"] }, "banned": ["delegate", "recall", "answer_ask"],
-    "mention": ["remember|noted|got it|will do"] }
+    "mention": ["remember|noted|got it|will do"] },
+  {"id": "plan-read-self", "from": "deeper reading: a plan's state is read, not delegated", "say": "How's plan JON-4119 going?", "expect": {"any": ["plan", "read_session"]}, "banned": ["delegate"], "mention": ["header|green|PR|88|checks"]},
+  {"id": "pr-checks-self", "from": "deeper reading: CI results are read, not delegated", "say": "Are the checks passing on pull request 88 in the shop repo?", "expect": {"any": ["github"]}, "banned": ["delegate"], "mention": ["e2e|failed|checkout"]},
+  {"id": "vault-self", "from": "deeper reading: a note is searched, not handed to OpenClaw", "say": "What do my notes say about the Colin accountability check?", "expect": {"any": ["vault", "look_into"]}, "banned": ["delegate"]},
+  {"id": "server-self", "from": "deeper reading: server state is read", "say": "How's the server doing, disk and load?", "expect": {"any": ["server_status", "look_into"]}, "banned": ["delegate"]},
+  {"id": "look-into-that", "from": "deeper reading: 'look into that' starts the background look", "history": [{"role": "user", "content": "What's the state of the shop header plan?"}, {"role": "assistant", "content": "JON-4119, the shop header colour, is in progress with a PR waiting on checks."}], "say": "Look into that for me, why is the PR stuck?", "expect": {"any": ["look_into", "github", "plan"]}, "banned": ["delegate"]},
+  {"id": "action-still-delegated", "from": "deeper reading: an action still goes to a worker", "say": "Merge pull request 88 for me.", "expect": {"any": ["delegate"]}, "banned": ["github", "look_into"]},
+  {"id": "it-follow-up", "from": "conversation: 'it' means the plan just discussed", "history": [{"role": "user", "content": "How's JON-4119 going?"}, {"role": "assistant", "content": "JON-4119, the shop header, is in progress; PR 88 is waiting on checks."}], "say": "And is it merged yet?", "expect": {"any": ["github", "plan"]}, "banned": ["delegate"], "notSay": ["which (plan|one)"]}
 ]

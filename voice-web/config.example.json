@@ -53,5 +53,15 @@
     "dir": "",
     "dejaCommand": ""
   },
+  "reader": {
+    "_note": "Optional. Turns on Sift's own read-only reading (plan, plan_search, github, vault, server_status, web) and look_into, a short background read on a cheap model. Every part is off unless its key is set. The God session folder is never readable.",
+    "model": "deepseek/deepseek-v4-flash",
+    "maxSteps": 6,
+    "maxSeconds": 75,
+    "linearTokenFile": "/path/to/linear-app-token.json",
+    "github": { "repos": ["owner/name"], "home": "/home/user" },
+    "vault": { "root": "/srv/vault", "url": "http://127.0.0.1:8788", "tokenFile": "/path/to/recall-service.token" },
+    "status": { "services": ["some.service"], "files": [{ "name": "version", "path": "/path/to/version.json", "chars": 300 }], "commands": [{ "name": "main", "argv": ["git", "-C", "/path/to/repo", "log", "-1", "--format=%h %cr %s", "origin/main"] }] }
+  },
   "_note_preload": "preload: read the needs queue, sessions, sources marked preload and recent call notes at call start (and offer catch_up). filler: say a short line when a tool starts in silence."
 }

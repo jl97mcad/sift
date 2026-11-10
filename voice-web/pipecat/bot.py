@@ -69,6 +69,13 @@ LABELS = {
     "catch_up": "Catching up",
     "answer_ask": "Recording your answer",
     "recall": "Remembering",
+    "plan": "Reading a plan",
+    "plan_search": "Searching the plans",
+    "github": "Checking GitHub",
+    "vault": "Looking through your notes",
+    "server_status": "Checking the server",
+    "web": "Checking the web",
+    "look_into": "Looking into it",
 }
 # Said the moment a tool starts when nothing has been said yet this turn, so a lookup never starts in silence.
 FILLERS = ["Checking.", "One sec.", "Let me look.", "Just a moment.", "Looking now.", "Let me check."]
@@ -252,7 +259,7 @@ async def bot(runner_args: RunnerArguments):
     for tool in setup["tools"]:
         name = tool["function"]["name"]
         if name not in ("stay_quiet", "end_conversation"):
-            llm.register_function(name, remote, cancel_on_interruption=name != "delegate")
+            llm.register_function(name, remote, cancel_on_interruption=name not in ("delegate", "look_into"))
 
     async def stay_quiet(params: FunctionCallParams):
         await params.result_callback("Staying quiet.", properties=FunctionCallResultProperties(run_llm=False))
