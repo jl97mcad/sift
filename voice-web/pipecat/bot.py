@@ -309,10 +309,14 @@ async def bot(runner_args: RunnerArguments):
     started = datetime.now(timezone.utc)
     call_id = uuid.uuid4().hex  # ties this call's answered asks to its note
 
+    preloaded = False
+
     def add_preload(block: str):
-        """Puts the already-read block into the system message, wherever the conversation is."""
-        if not block:
+        """Puts the already-read block into the system message once, wherever the conversation is."""
+        nonlocal preloaded
+        if not block or preloaded:
             return
+        preloaded = True
         messages = list(context.get_messages())
         if messages and messages[0].get("role") == "system":
             messages[0] = {"role": "system", "content": f"{messages[0]['content']}\n\n{block}"}
@@ -322,7 +326,8 @@ async def bot(runner_args: RunnerArguments):
     @transport.event_handler("on_client_connected")
     async def _connected(_t, _c):
         nonlocal started
-        started = datetime.now(timezone.utc)
+        if not preloaded:  # a reconnect keeps the call's first start time
+            started = datetime.now(timezone.utc)
         logger.info("SIFT call connected")
         workers.extend([asyncio.create_task(follow()), asyncio.create_task(speak_news())])
         # Wait a moment for the read-ahead so the first answer can use it; if it's slow, greet and add it when ready.

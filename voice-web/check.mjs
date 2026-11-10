@@ -156,6 +156,7 @@ import { answerArgv, answerAsk, clearYes, consequence, findAsks, forget, notHear
   assert.equal(summaryFor("I don't want to send it"), "Owner answered by voice: declined the recommendation.");
   assert.deepEqual(notHeard("Send 5 copies", "send copies"), ["5"]);
   assert.deepEqual(notHeard("Send five", "send it"), ["five"]);
+  assert.deepEqual(notHeard("yes JON9999", "yes"), ["jon9999"]);
   assert.deepEqual(notHeard("JON-4164: yes", "John forty-one sixty-four yes", "JON-4164"), []);
   state = "open";
   await answerAsk(cfg, { plan: "JON-4119", answer: "Yes" }, deps);

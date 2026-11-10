@@ -90,7 +90,7 @@ const wordsOf = (text) => String(text ?? "").toLowerCase().replace(/[’']/g, ""
 export function notHeard(answer, heard, plan = "") {
   const have = new Set(wordsOf(heard));
   const planWords = new Set(wordsOf(plan)); // "JON-4164" may be heard as "John forty-one sixty-four"
-  return wordsOf(answer).filter((w) => !have.has(w) && !PLAN_WORDS.has(w) && !planWords.has(w) && !/^[a-z]{2,10}\d+$/.test(w));
+  return wordsOf(answer).filter((w) => !have.has(w) && !PLAN_WORDS.has(w) && !planWords.has(w));
 }
 
 /** A clear yes ("yes", "go ahead", "record it"), with no "no" or "don't" in it. */
