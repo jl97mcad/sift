@@ -1,4 +1,5 @@
 {
+  "title": "Voice",
   "assistant": "",
   "person": "Alex",
   "timezone": "Europe/London",
@@ -19,20 +20,6 @@
       "lead": true,
       "use": "One plan's detail; needs the plan number",
       "handoff": "I'll check with that plan's lead"
-    },
-    {
-      "name": "OpenClaw",
-      "command": "sudo -n -u openclaw /opt/openclaw/bin/openclaw agent --json --message-file {file}",
-      "use": "Deep research across notes, meetings, email and memory",
-      "handoff": "Let me look deeper into that",
-      "timeoutMinutes": 10
-    },
-    {
-      "name": "Taro Twin",
-      "url": "relay://<the laptop's pairing address from `paseo daemon pair --json`>",
-      "seat": "taro-twin",
-      "use": "Things only the laptop can see; only while it's on",
-      "handoff": "I'll ask Taro Twin on your laptop"
     }
   ],
   "needs": {
@@ -47,9 +34,9 @@
   ],
   "paseo": {
     "hosts": {
-      "main": "127.0.0.1:6767",
-      "laptop": "relay://<the laptop's pairing address>"
+      "main": "127.0.0.1:6767"
     },
     "default": "main"
-  }
+  },
+  "hearing": "Plan numbers are like ABC-123; \"ABC one two three\" is ABC-123."
 }

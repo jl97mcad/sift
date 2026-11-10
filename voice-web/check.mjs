@@ -43,3 +43,5 @@ assert.ok(plan(cfg, { command: "ls", host: "nope" }).refused);
 assert.ok(skills({}).some((s) => s.name === "paseo" && s.description));
 assert.ok(skill({}, { name: "catch-up" }).includes("needs_queue"));
 console.log("tools ok");
+assert.deepEqual(words(`send abc don't deploy`), ["send", "abc", "don't", "deploy"]);
+console.log("apostrophe ok");

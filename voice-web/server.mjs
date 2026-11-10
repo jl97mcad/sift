@@ -23,6 +23,8 @@ const config = JSON.parse(await readFile(new URL("./config.json", import.meta.ur
   readFile(new URL("./config.example.json", import.meta.url), "utf8")));
 const page = await readFile(new URL("./index.html", import.meta.url));
 const LOCAL = "tcp://127.0.0.1:6767";
+/** The page's heading and home-screen name: config.title, else the assistant's name, else "Voice". */
+const title = () => config.title || config.assistant || "Voice";
 const clients = new Map(); // one Paseo connection per daemon, opened on first use and kept open
 /** The open connection for a Paseo host address; a bare host:port means TCP. */
 const open = (address) => daemon(/^\w+:\/\//.test(address) ? address : `tcp://${address}`);
@@ -122,6 +124,7 @@ async function session(worker, plan) {
   const live = entries.map((e) => e.agent).filter((a) => a.status !== "closed" && !a.archivedAt && !/retired/i.test(a.title ?? a.name ?? ""));
   const found = worker.lead
     ? live.filter((a) => plan && new RegExp(`^${plan.replace(/[^A-Za-z0-9-]/g, "")}\\b.*\\blead\\b`, "i").test(a.title ?? a.name ?? ""))
+    : worker.title ? live.filter((a) => new RegExp(worker.title, "i").test(a.title ?? a.name ?? "")) // a session with no seat label, by its title
     : live.filter((a) => a.labels?.seat === worker.seat);
   if (!found.length) throw new Error(worker.lead ? `No lead session is running for ${plan || "that plan"}.` : `The ${worker.name} session is not running.`);
   return { client, agent: found.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0] };
@@ -150,43 +153,85 @@ function needsQueue() {
 }
 
 // ---- Reading directly: answers in seconds, without asking another session.
-const daemonsOf = () => [...new Set(workersOf(config).map((w) => w.url).filter(Boolean))];
 const titleOf = (a) => a.title ?? a.name ?? "";
-
-/** Live sessions on every configured daemon: title, status, seat. */
-async function sessions() {
-  const lines = [];
-  for (const url of daemonsOf()) {
-    try {
-      const client = await daemon(url);
-      const { entries } = await client.agents.list();
-      for (const a of entries.map((e) => e.agent)) {
-        if (a.status === "closed" || a.archivedAt || /retired/i.test(titleOf(a))) continue;
-        lines.push(`${titleOf(a).slice(0, 90)} | ${a.status}${a.labels?.seat ? ` | seat ${a.labels.seat}` : ""}`);
-      }
-    } catch (error) { lines.push(`(couldn't read ${url.replace(/\/\/.*@/, "//")}: ${error.message})`); }
-  }
-  return lines.length ? lines.slice(0, 80).join("\n") : "No live sessions.";
+const bare = (address) => (/^\w+:\/\//.test(address) ? address : `tcp://${address}`).replace(/^ws:\/\/([^/]+).*$/, "tcp://$1");
+/** Every daemon to read: the named Paseo hosts, then any worker's daemon they don't cover. */
+function daemonsOf() {
+  const seen = new Map();
+  for (const [name, address] of Object.entries(config.paseo?.hosts ?? {})) seen.set(bare(address), name);
+  for (const w of workersOf(config)) if (w.url && !seen.has(bare(w.url))) seen.set(bare(w.url), w.name);
+  return [...seen].map(([url, name]) => ({ url, name }));
+}
+/** Sessions on a daemon that aren't archived; "closed" ones (stopped but resumable) only when asked for. */
+async function liveOn(url, { closed = false } = {}) {
+  const { entries } = await (await daemon(url)).agents.list();
+  return entries.map((e) => e.agent).filter((a) => (closed || a.status !== "closed") && !a.archivedAt && !/retired/i.test(titleOf(a)));
 }
 
-/** The latest prompts and replies of the session whose title or seat best matches the name. */
-async function readSession({ name }) {
-  const want = String(name ?? "").toLowerCase().trim();
-  if (!want) return "Say which session to read.";
-  for (const url of daemonsOf()) {
+// Spoken names against written titles: "sift two" is "Sift 2", "W01 4660" is "W01-4660".
+const NUMBERS = Object.fromEntries("zero one two three four five six seven eight nine ten eleven twelve".split(" ").map((w, i) => [w, String(i)]));
+const FILLER = new Set(["the", "my", "a", "an", "on", "in", "of", "s", "session", "sessions", "agent", "chat", "one's", "pro"]);
+const tokens = (text) => String(text ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").split(" ").filter(Boolean).map((w) => NUMBERS[w] ?? w);
+function score(want, agent) {
+  const have = [...tokens(titleOf(agent)), ...tokens(agent.labels?.seat)];
+  const hits = want.filter((w) => have.includes(w) || (w.length >= 4 && have.some((h) => h.startsWith(w) || w.startsWith(h) && h.length >= 4)));
+  return want.length ? hits.length / want.length : 0;
+}
+
+/** Live sessions on every daemon, by host: short id, title, status, seat. */
+async function sessions() {
+  const lines = [];
+  for (const { url, name } of daemonsOf()) {
     try {
-      const client = await daemon(url);
-      const { entries } = await client.agents.list();
-      const live = entries.map((e) => e.agent).filter((a) => a.status !== "closed" && !a.archivedAt);
-      const match = live.find((a) => a.labels?.seat?.toLowerCase() === want) ?? live.find((a) => titleOf(a).toLowerCase().includes(want));
-      if (!match) continue;
-      const page = await client.agents.ref(match.id).timeline.refetch({ direction: "tail", limit: 60, projection: "projected" });
-      const said = page.entries.map((e) => e.item).filter((i) => (i.type === "assistant_message" || i.type === "user_message") && i.text)
-        .slice(-6).map((i) => `${i.type === "user_message" ? "Asked" : "Said"}: ${i.text.slice(0, 900)}`);
-      return `${titleOf(match)} (${match.status})\n${said.join("\n") || "Nothing said yet."}`;
-    } catch (error) { console.error("read session", error.message); }
+      const live = (await liveOn(url)).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+      lines.push(`On ${name}: ${live.length} live, ${live.filter((a) => a.status === "running").length} running`);
+      for (const a of live.slice(0, 40)) lines.push(`${name} | ${a.id.slice(0, 8)} | ${titleOf(a).slice(0, 90)} | ${a.status}${a.labels?.seat ? ` | seat ${a.labels.seat}` : ""}`);
+    } catch (error) { lines.push(`On ${name}: couldn't read it (${error.message})`); }
   }
-  return `No live session matches "${name}".`;
+  return lines.length ? lines.join("\n") : "No live sessions.";
+}
+
+/** A session's latest prompts and replies. */
+async function said(client, agent, host) {
+  const page = await client.agents.ref(agent.id).timeline.refetch({ direction: "tail", limit: 60, projection: "projected" });
+  const lines = page.entries.map((e) => e.item).filter((i) => (i.type === "assistant_message" || i.type === "user_message") && i.text)
+    .slice(-6).map((i) => `${i.type === "user_message" ? "Asked" : "Said"}: ${i.text.slice(0, 900)}`);
+  return `${titleOf(agent)} (${agent.status}${host ? `, on ${host}` : ""})\n${lines.join("\n") || "Nothing said yet."}`;
+}
+
+/** The latest prompts and replies of the session that best matches the name, on any host. */
+async function readSession({ name }) {
+  const asked = String(name ?? "").toLowerCase().trim();
+  if (!asked) return "Say which session to read.";
+  // A configured worker's name ("Control") means that worker's session, however it's found.
+  const worker = workersOf(config).find((w) => !w.lead && !w.command && w.name.toLowerCase() === asked);
+  if (worker) {
+    try {
+      const { client, agent } = await session(worker);
+      return await said(client, agent);
+    } catch (error) { return error.message; }
+  }
+  let want = tokens(asked).filter((w) => !FILLER.has(w));
+  // "on my MacBook": a host's name in the request means that host only.
+  let hosts = daemonsOf();
+  const named = hosts.filter((h) => { const t = tokens(h.name); return t.length && t.every((w) => want.includes(w)); });
+  if (named.length) { hosts = named; const drop = new Set(named.flatMap((h) => tokens(h.name))); want = want.filter((w) => !drop.has(w)) ; }
+  if (!want.length) return `Say which session on ${hosts.map((h) => h.name).join(" or ")}.`;
+  let best = null;
+  const failed = [];
+  for (const { url, name: host } of hosts) {
+    try {
+      for (const agent of await liveOn(url, { closed: true })) {
+        // Ties go to a current session (not an "old" one or one that hit its limit), then an open one, then the most recently active.
+        const s = score(want, agent) - (/\bold\b|\blimit\b|handoff from|superseded/i.test(titleOf(agent)) ? 0.01 : 0) - (agent.status === "closed" ? 0.005 : 0);
+        if (s > 0 && (!best || s > best.s || (s === best.s && String(agent.updatedAt) > String(best.agent.updatedAt)))) best = { s, agent, url, host };
+      }
+    } catch (error) { failed.push(`${host} (${error.message})`); }
+  }
+  const unread = failed.length ? ` I couldn't read ${failed.join(", ")}.` : "";
+  if (!best || best.s < 0.49) return `No live session matches "${name}".${unread} Use sessions to see the titles.`;
+  const close = best.s < 0.98 ? `Closest match for "${name}": ` : "";
+  return close + (await said(await daemon(best.url), best.agent, best.host)) + unread;
 }
 
 /** A configured read-only source (a file or command), e.g. the god session's focus list. */
@@ -379,19 +424,22 @@ function send(response, status, payload, type = "application/json") {
   response.end(type === "application/json" ? JSON.stringify(payload) : payload);
 }
 
-createServer(async (request, response) => {
+const page_server = createServer(async (request, response) => {
   try {
     if (request.method === "GET" && request.url === "/") return send(response, 200, page, "text/html; charset=utf-8");
     // Home-screen app: the manifest names it after the assistant (or "Voice" when it has no name).
     if (request.method === "GET" && request.url === "/manifest.webmanifest") {
       const manifest = JSON.parse(await readFile(new URL("./manifest.webmanifest", import.meta.url), "utf8"));
-      if (config.assistant) { manifest.name = config.assistant; manifest.short_name = config.assistant; }
+      manifest.name = manifest.short_name = title();
       return send(response, 200, JSON.stringify(manifest), "application/manifest+json");
     }
     const icon = request.method === "GET" && request.url.match(/^\/icon-(180|192|512)\.png$/);
     if (icon) return send(response, 200, await readFile(new URL(`./icons/icon-${icon[1]}.png`, import.meta.url)), "image/png");
-    if (request.method === "GET" && request.url === "/api/config") {
-      return send(response, 200, { assistant: config.assistant ?? "", person: config.person, jobs: jobs.map(view) });
+    if (request.method === "GET" && request.url.startsWith("/api/config")) {
+      // The phone's timezone, so spoken times are right when config.json doesn't set one.
+      const zone = new URL(request.url, "http://x").searchParams.get("tz");
+      if (!config.timezone && zone && Intl.supportedValuesOf("timeZone").includes(zone)) config.phoneTimezone = zone;
+      return send(response, 200, { title: title(), person: config.person, jobs: jobs.map(view) });
     }
     if (request.method === "GET" && request.url === "/api/events") {
       response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
@@ -424,7 +472,12 @@ createServer(async (request, response) => {
     console.error(error);
     if (!response.headersSent) send(response, 500, { error: error.message ?? String(error) });
   }
-}).listen(PORT, "127.0.0.1", () => console.log(`Voice assistant for ${config.person} on http://127.0.0.1:${PORT}`));
+});
+// SOCKET: a Unix socket for `tailscale serve unix:...`, where a firewall keeps other users off local TCP ports.
+if (process.env.SOCKET) {
+  await rm(process.env.SOCKET, { force: true });
+  page_server.listen(process.env.SOCKET, async () => { await chmod(process.env.SOCKET, 0o660); console.log(`Voice assistant for ${config.person} on ${process.env.SOCKET}`); });
+} else page_server.listen(PORT, "127.0.0.1", () => console.log(`Voice assistant for ${config.person} on http://127.0.0.1:${PORT}`));
 
 // Connect to every Paseo host at start, so the first question doesn't wait for a handshake.
 for (const address of Object.values(config.paseo?.hosts ?? {})) open(address).catch((error) => console.error(`Paseo host ${address.replace(/\?.*$/, "")}: ${error.message}`));
