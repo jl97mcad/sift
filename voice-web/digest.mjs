@@ -122,6 +122,7 @@ const planIn = (title) => String(title ?? "").match(/^\s*([A-Z]{2,10}-\d+)/)?.[1
  */
 export function digestSessions(hosts, { compact = false, now = Date.now() } = {}) {
   const lines = [];
+  hosts = (hosts ?? []).map((h) => ({ ...h, agents: h.agents?.map((a) => ({ ...a, title: cleanText(a.title ?? a.name ?? "") })) }));
   const width = compact ? 55 : 80;
   for (const { name, agents, error } of hosts ?? []) {
     if (error) { lines.push(`On ${name}: unavailable (${short(error, 120)})`); continue; }
@@ -166,12 +167,13 @@ export function digestDeja(text, cap = 1500) {
  */
 export function contextBlock({ at, needs, sessions, sources = [], memory, person = "the person" }, cap = 6000) {
   const fit = (text, n) => { const t = String(text ?? "").trim(); return t.length > n ? `${t.slice(0, n).replace(/\s+\S*$/, "")}…` : t; };
+  const last = (text, n) => { const t = String(text ?? "").trim(); return t.length > n ? `…${t.slice(-n)}` : t; }; // the newest notes are at the end
   const parts = [`Already read for this call, at ${at}. This is a snapshot from the start of the call: answer from it straight away, without a tool. If ${person} asks for the latest, for detail, or something may have changed since, read again with the tools.`];
   if (needs) parts.push(`Open questions waiting for ${person} (the needs queue):\n${fit(needs, 1600)}`);
   if (sessions) parts.push(`Sessions:\n${fit(sessions, 1400)}`);
   const each = sources.length ? Math.floor(1800 / sources.length) : 0;
   for (const s of sources) if (s.text) parts.push(`${s.name}:\n${fit(cleanText(s.text, { keepLines: true }), each)}`);
-  if (memory) parts.push(`Notes from earlier calls (yours, written after each call):\n${fit(memory, 1200)}`);
+  if (memory) parts.push(`Notes from earlier calls (yours, written after each call):\n${last(memory, 1200)}`);
   const block = parts.join("\n\n");
   return block.length > cap ? `${block.slice(0, cap)}…` : block;
 }

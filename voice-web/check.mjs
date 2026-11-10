@@ -94,6 +94,8 @@ import { cleanText, commandGist, contextBlock, digestDeja, digestLogs, digestSes
   const block = contextBlock({ at: "12:00 on Tuesday", needs: "JON-1: Yes?", sessions: "On main: 1 live", sources: [{ name: "focus list", text: "x".repeat(5000) }], memory: "- decided A", person: "Jon" });
   assert.ok(block.startsWith("Already read for this call, at 12:00 on Tuesday."));
   assert.ok(block.includes("JON-1: Yes?") && block.includes("decided A") && block.length <= 6001);
+  assert.ok(contextBlock({ at: "now", memory: `old ${"x ".repeat(800)} newest` }).endsWith("newest"));
+  assert.ok(digestSessions([{ name: "h", agents: [{ id: "eeeeeeee1", title: "Fix **bold** at https://x.y/z", status: "running" }] }]).includes("eeeeeeee Fix bold at [link]"));
   console.log("digest ok");
 }
 
@@ -191,5 +193,7 @@ import { join } from "node:path";
   assert.ok((await recentMemory(cfg)).includes("Today:") && (await recentMemory(cfg)).includes("Second call."));
   assert.ok((await recallMemory(cfg, { query: "green" })).includes("Jon chose green."));
   assert.equal(await recentMemory({ person: "Jon" }), "");
+  await writeMemory(cfg, Date.parse("2026-03-29T12:00:00Z"), "- The day before the clocks changed.");
+  assert.ok((await recentMemory(cfg, Date.parse("2026-03-30T00:30:00+01:00"))).includes("Yesterday:\n## Call at 13:00\n- The day before the clocks changed."));
   console.log("memory ok");
 }

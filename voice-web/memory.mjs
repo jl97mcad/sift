@@ -56,7 +56,9 @@ async function files(dir) {
 export async function recentMemory(config, when = Date.now(), cap = 1400) {
   if (!remembering(config)) return "";
   const zone = config.timezone || config.phoneTimezone;
-  const today = dayAndTime(when, zone).day, yesterday = dayAndTime(when - 86_400_000, zone).day;
+  const today = dayAndTime(when, zone).day;
+  const [y, m, d] = today.split("-").map(Number);
+  const yesterday = new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10); // the calendar day before, whatever the clocks did
   const parts = [];
   for (const [day, label] of [[yesterday, "Yesterday"], [today, "Today"]]) {
     const text = await readFile(join(config.memory.dir, `${day}.md`), "utf8").catch(() => "");
