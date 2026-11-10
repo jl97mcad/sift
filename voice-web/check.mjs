@@ -68,6 +68,7 @@ import { cleanText, commandGist, contextBlock, digestDeja, digestLogs, digestSes
   assert.ok(d.includes("Earlier reply: Earlier: plans queued."));
   assert.ok(!/rm -rf|https:|thinking/.test(d));
   assert.ok(digestSession({ ...agent, status: "running" }, [{ type: "user_message", text: "Do X" }], undefined, now).includes("No reply to it yet; still working."));
+  assert.ok(digestSession(agent, [{ type: "tool_call", name: "Bash", detail: { command: "ls" } }], undefined, now).includes("Recent steps: 1 tool step (Bash), last: Bash ls"));
   const logs = digestLogs(agent, items, 15, "main", now).split("\n");
   assert.deepEqual(logs.slice(1), ["Said: Earlier: plans queued.", "Asked: Pick up from the handoff", "Tools: 3 tool steps (Bash ×2, Read), last: Read b.md; 1 failed", "Said: Picked up. See PR. [code] [data]"]);
   const hosts = [{ name: "main", agents: [

@@ -83,7 +83,7 @@ export function digestSession(agent, items, host, now = Date.now()) {
   const replyAfter = since.filter((i) => i.type === "assistant_message" && i.text?.trim()).at(-1);
   if (replyAfter) lines.push(`Latest reply: ${short(cleanText(replyAfter.text), 600)}`);
   else if (lastAsk >= 0) lines.push(agent.status === "running" ? "No reply to it yet; still working." : "No reply to it.");
-  if (steps) lines.push(`Since the ask: ${steps}`);
+  if (steps) lines.push(`${lastAsk >= 0 ? "Since the ask" : "Recent steps"}: ${steps}`);
   const message = since.filter((i) => i.type === "tool_call" && i.agentMessage).at(-1);
   if (message) lines.push(`Message from ${message.agentMessage.sender?.title ?? "a session"}: ${short(cleanText(message.agentMessage.text), 250)}`);
   const earlier = replies.filter((r) => r !== replyAfter).at(-1);
