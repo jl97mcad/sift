@@ -134,6 +134,7 @@ export async function writeMemory(config, started, summary) {
   if (!remembering(config) || !summary.trim()) return null;
   const { day, time } = dayAndTime(started, config.timezone || config.phoneTimezone);
   await mkdir(config.memory.dir, { recursive: true, mode: 0o700 });
+  await chmod(config.memory.dir, 0o700); // a folder that already existed keeps its own mode otherwise
   const file = join(config.memory.dir, `${day}.md`);
   const head = (await readFile(file, "utf8").catch(() => "")) ? "" : `# ${day}\n`;
   await appendFile(file, `${head}\n## Call at ${time}\n${summary.trim()}\n`, { mode: 0o600 });

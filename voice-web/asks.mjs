@@ -5,7 +5,8 @@
 import { spawn } from "node:child_process";
 
 const READBACK_MINUTES = 10; // a yes must follow its read-back within this long
-const pending = new Map(); // ask_id -> { answer, at }: read-backs given, waiting on a yes
+const pending = new Map(); // ask_id -> { answer, at, turn }: read-backs given, waiting on a yes
+let writing = Promise.resolve(); // one write at a time: "yes to both" must not race on the ask store
 
 export const answering = (config) => Boolean(config.asks?.answerCommand && config.asks?.listCommand);
 export const dryRun = (config) => config.asks?.dryRun === true || /^(1|true|yes)$/i.test(process.env.SIFT_ASKS_DRY_RUN ?? "");
@@ -153,10 +154,13 @@ export async function answerAsk(config, { plan, answer, confirmed, which, _heard
   const before = pending.get(ask.ask_id);
   const fresh = before && now() - before.at < READBACK_MINUTES * 60_000 && same(before.answer, words);
   // The yes has to come from the person after they heard the read-back: a later turn, and a clear yes.
-  if (confirmed === true && fresh && turn !== undefined && !(Number(turn) > Number(before.turn ?? -1))) {
+  if (confirmed === true && fresh && (turn === undefined || last === undefined)) {
+    return "Not recorded: there's no record of the person's reply to the read-back here.";
+  }
+  if (confirmed === true && fresh && !(Number(turn) > Number(before.turn ?? -1))) {
     return `Not recorded: ${person} hasn't answered the read-back yet. Speak it now and wait for their reply; call with confirmed true only in a later turn, after a clear yes.`;
   }
-  if (confirmed === true && fresh && last !== undefined && !clearYes(last)) {
+  if (confirmed === true && fresh && !clearYes(last)) {
     return `Not recorded: "${short(last, 120)}" isn't a clear yes to the read-back. Ask again, or leave it.`;
   }
   if (confirmed !== true || !fresh) {
@@ -173,7 +177,7 @@ export async function answerAsk(config, { plan, answer, confirmed, which, _heard
     log(`answer_ask DRY RUN, nothing written. Would run ${JSON.stringify(argv)} through asks.answerCommand`);
     return `Dry run: nothing was recorded. It would have recorded ${person}'s answer to ${title}. Tell ${person} it's a test and nothing was written.`;
   }
-  const result = await write(argv);
+  const result = await (writing = writing.then(() => write(argv), () => write(argv)));
   log(`answer_ask wrote ${ask.plan} ask ${ask.ask_id}: exit ${result.code}${result.code ? ` ${short(result.err || result.out, 300)}` : ""}`);
   if (result.code !== 0) return `The write failed (${short(result.err || result.out || `exit ${result.code}`, 200)}). Don't retry: tell ${person} it didn't go through, and that Control can read the ask back and check.`;
   try {

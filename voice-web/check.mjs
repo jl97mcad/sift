@@ -129,14 +129,15 @@ import { answerArgv, answerAsk, clearYes, consequence, findAsks, forget, notHear
   assert.ok(first.includes("Nothing is written yet") && first.includes("Recording your answer to Send the partner note: 'Yes, send it'. This lets Control send it outside the company"), first);
   assert.equal(writes.length, 0);
   assert.ok((await answerAsk(cfg, { plan: "JON-4119", answer: "Approved", _heard: "yes send it" }, deps)).startsWith("Not their words"));
-  assert.ok((await answerAsk(cfg, { plan: "JON-4119", answer: "Yes, send it, now", confirmed: true }, deps)).includes("Not recorded yet")); // a yes to other words
+  assert.ok((await answerAsk(cfg, { plan: "JON-4119", answer: "Yes, send it", confirmed: true }, deps)).includes("no record of the person's reply")); // no turn given
+  assert.ok((await answerAsk(cfg, { plan: "JON-4119", answer: "Yes, send it, now", confirmed: true, _turn: 9, _last: "yes" }, deps)).includes("Not recorded yet")); // a yes to other words
   assert.equal(writes.length, 0);
   await answerAsk(cfg, { plan: "JON-4119", answer: "Yes, send it" }, deps);
-  const dry = await answerAsk({ ...cfg, asks: { ...cfg.asks, dryRun: true } }, { plan: "JON-4119", answer: "Yes, send it", confirmed: true }, deps);
+  const dry = await answerAsk({ ...cfg, asks: { ...cfg.asks, dryRun: true } }, { plan: "JON-4119", answer: "Yes, send it", confirmed: true, _turn: 9, _last: "Yes." }, deps);
   assert.ok(dry.startsWith("Dry run") && writes.length === 0 && logs.at(-1).includes('"--ask-id","a1"'), dry);
-  assert.ok((await answerAsk(cfg, { plan: "JON-4119", answer: "Yes, send it", confirmed: true }, deps)).includes("Not recorded yet")); // the dry run used up the read-back
+  assert.ok((await answerAsk(cfg, { plan: "JON-4119", answer: "Yes, send it", confirmed: true, _turn: 9, _last: "Yes." }, deps)).includes("Not recorded yet")); // the dry run used up the read-back
   await answerAsk(cfg, { plan: "JON-4119", answer: "Yes, send it" }, deps);
-  const done = await answerAsk(cfg, { plan: "JON-4119", answer: "Yes, send it", confirmed: true }, deps);
+  const done = await answerAsk(cfg, { plan: "JON-4119", answer: "Yes, send it", confirmed: true, _turn: 9, _last: "Yes, go ahead." }, deps);
   assert.equal(done, "Recorded: Jon's answer to Send the partner note. The ask is now answered.");
   assert.equal(writes.length, 1);
   assert.ok((await answerAsk(cfg, { plan: "JON-4164", answer: "Yes" }, deps)).includes("has 2 open asks"));
@@ -152,14 +153,14 @@ import { answerArgv, answerAsk, clearYes, consequence, findAsks, forget, notHear
   assert.ok(clearYes("Yes, go ahead.") && clearYes("Record it please") && !clearYes("No") && !clearYes("Yes but don't send it") && !clearYes("What's the time?"));
   state = "open";
   await answerAsk(cfg, { plan: "JON-4119", answer: "Yes" }, deps);
-  const failed = await answerAsk(cfg, { plan: "JON-4119", answer: "Yes", confirmed: true }, { ...deps, write: async () => ({ code: 1, out: "", err: "Linear 500" }) });
+  const failed = await answerAsk(cfg, { plan: "JON-4119", answer: "Yes", confirmed: true, _turn: 9, _last: "yes" }, { ...deps, write: async () => ({ code: 1, out: "", err: "Linear 500" }) });
   assert.ok(failed.startsWith("The write failed (Linear 500). Don't retry"), failed);
   console.log("asks ok");
 }
 
 // Memory: dated notes, keyword recall, secrets scrubbed.
 import { bullets, dayAndTime, recall as recallMemory, recentMemory, scoreMemory, scrub, transcriptText, writeMemory } from "./memory.mjs";
-import { mkdtemp, readFile as readText, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile as readText, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 {
@@ -177,6 +178,7 @@ import { join } from "node:path";
   const dir = await mkdtemp(join(tmpdir(), "voice-memory-"));
   const cfg = { person: "Jon", timezone: "Europe/London", memory: { dir: join(dir, "m") } };
   const now = Date.now();
+  await mkdir(cfg.memory.dir, { mode: 0o755 });
   const file = await writeMemory(cfg, now, "- Jon chose green.");
   await writeMemory(cfg, now, "- Second call.");
   assert.equal((await stat(file)).mode & 0o777, 0o600);

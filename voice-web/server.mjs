@@ -289,7 +289,7 @@ const answered = []; // asks answered by voice ({ at, plan, title }), for the ca
 async function answerAskTool(args) {
   if (!answering(config)) return "Answering asks by voice isn't set up here.";
   const result = await answerAsk(config, args ?? {});
-  if (/^(Recorded|Dry run)/.test(result)) answered.push({ at: Date.now(), plan: args.plan, note: result.slice(0, 200) });
+  if (/^Recorded/.test(result)) answered.push({ at: Date.now(), plan: args.plan, note: result.slice(0, 200) });
   answered.splice(0, Math.max(0, answered.length - 50));
   return result;
 }

@@ -50,7 +50,7 @@ export function toolsFor(config) {
       confirmed: { type: "boolean", description: "True only on the second call, after they clearly said yes to the read-back." },
       which: { type: "string", description: "Only when the plan has several open asks: its number in the list given, or words from its title." },
     }, required: ["plan", "answer"] } } }] : []),
-    ...(recalling(config) ? [{ type: "function", function: { name: "recall", description: "Search memory: notes from earlier calls with the person" + (config.memory?.dejaCommand ? ", and their agents' session history (slower, up to 20 s)" : "") + `. For "what did we say about X", "remind me what I decided about Y".`, parameters: { type: "object", properties: { query: { type: "string", description: "A few key words, e.g. cloudflare proxy" } }, required: ["query"] } } }] : []),
+    ...(recalling(config) ? [{ type: "function", function: { name: "recall", description: "Search memory: notes from earlier calls with the person" + (config.memory?.dejaCommand ? `, and their agents' session history (slower, up to ${config.memory.dejaTimeoutSeconds ?? 20} s)` : "") + `. For "what did we say about X", "remind me what I decided about Y".`, parameters: { type: "object", properties: { query: { type: "string", description: "A few key words, e.g. cloudflare proxy" } }, required: ["query"] } } }] : []),
     { type: "function", function: { name: "stay_quiet", description: "Say nothing this turn: the words weren't meant for you (background talk, a cough, thinking aloud, a fragment).", parameters: { type: "object", properties: {} } } },
     { type: "function", function: { name: "end_conversation", description: "Stop listening, after a few words of goodbye, when the person says goodbye, good night or that's all.", parameters: { type: "object", properties: {} } } },
   ];
@@ -141,7 +141,7 @@ export async function respond(config, history, userText, handlers, onText, { too
     if (!names.some((name) => SPEAK_RESULT.has(name)) && text) break;
   }
   // Lookups done but nothing said yet: one last round without tools, so every question gets an answer.
-  if (!quiet && history.at(-1)?.role === "tool") { // a lookup's result was never spoken (even after "let me check")
+  if (!quiet && ["tool", "user"].includes(history.at(-1)?.role)) { // a lookup's result, or the question, was never answered
     const { text } = await stream(config, history, onText, false, context);
     const answer = text || "I couldn't get to that just now.";
     if (!text) onText(answer);
