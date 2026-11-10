@@ -12,6 +12,8 @@ Models (env): SIFT_LLM, SIFT_STT, SIFT_TTS, SIFT_TTS_VOICE, SIFT_TTS_RATE; key f
 import asyncio
 import json
 import os
+import random
+from datetime import datetime, timezone
 
 import aiohttp
 from loguru import logger
@@ -27,6 +29,7 @@ from pipecat.frames.frames import (
     LLMFullResponseStartFrame,
     LLMMessagesAppendFrame,
     LLMRunFrame,
+    LLMTextFrame,
     TTSSpeakFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
@@ -36,6 +39,7 @@ from pipecat.observers.user_bot_latency_observer import UserBotLatencyObserver
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
@@ -61,7 +65,13 @@ LABELS = {
     "delegate": "Handing it off",
     "paseo": "Running paseo",
     "skill": "Reading a how-to",
+    "catch_up": "Catching up",
+    "answer_ask": "Recording your answer",
+    "recall": "Remembering",
 }
+# Said the moment a tool starts when nothing has been said yet this turn, so a lookup never starts in silence.
+FILLERS = ["Checking.", "One sec.", "Let me look.", "Just a moment.", "Looking now.", "Let me check."]
+NO_FILLER = {"skill", "stay_quiet", "end_conversation"}
 
 
 def key() -> str:
@@ -91,9 +101,10 @@ def schemas(tools: list[dict]) -> ToolsSchema:
 class Busy(BaseObserver):
     """Who is talking or thinking, so news waits for a quiet moment instead of talking over anyone."""
 
-    def __init__(self):
+    def __init__(self, turn=None):
         super().__init__()
         self.user = self.bot = self.llm = False
+        self.turn = turn
 
     @property
     def quiet(self) -> bool:
@@ -103,8 +114,12 @@ class Busy(BaseObserver):
         frame = data.frame
         if isinstance(frame, UserStartedSpeakingFrame):
             self.user = True
+            if self.turn:
+                self.turn.reset()
         elif isinstance(frame, UserStoppedSpeakingFrame):
             self.user = False
+            if self.turn:
+                self.turn.reset()
         elif isinstance(frame, BotStartedSpeakingFrame):
             self.bot = True
         elif isinstance(frame, BotStoppedSpeakingFrame):
@@ -115,12 +130,50 @@ class Busy(BaseObserver):
             self.llm = False
 
 
+class Turn(FrameProcessor):
+    """Sits between the model and the voice: knows whether anything has been said this turn."""
+
+    def __init__(self):
+        super().__init__()
+        self.spoke = self.filled = False
+        self.last = ""
+
+    def reset(self):
+        self.spoke = self.filled = False
+
+    async def process_frame(self, frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, LLMTextFrame) and frame.text.strip():
+            self.spoke = True
+        await self.push_frame(frame, direction)
+
+    def filler(self) -> str | None:
+        """A short line to say now, at most once a turn and only before anything else is said."""
+        if self.spoke or self.filled:
+            return None
+        self.filled = True
+        line = random.choice([f for f in FILLERS if f != self.last])
+        self.last = line
+        return line
+
+
 async def bot(runner_args: RunnerArguments):
     assert isinstance(runner_args, SmallWebRTCRunnerArguments)
     http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=90))
     async with http.get(f"{TOOLS}/bot/setup") as r:
         setup = await r.json()
     person = setup.get("person") or "the person"
+
+    async def read_ahead() -> str:
+        """The needs queue, sessions and preload sources, read while the call connects."""
+        try:
+            async with http.get(f"{TOOLS}/bot/context", timeout=aiohttp.ClientTimeout(total=8)) as r:
+                return (await r.json()).get("context", "")
+        except Exception as error:
+            logger.warning(f"SIFT preload failed: {error}")
+            return ""
+
+    ahead = asyncio.create_task(read_ahead())  # "" unless the server's config turns preload on
     api_key = key()
 
     transport = SmallWebRTCTransport(
@@ -149,9 +202,10 @@ async def bot(runner_args: RunnerArguments):
 
     context = LLMContext([{"role": "system", "content": setup["prompt"]}], tools=schemas(setup["tools"]))
     pair = LLMContextAggregatorPair(context, user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()))
-    pipeline = Pipeline([transport.input(), stt, pair.user(), llm, tts, transport.output(), pair.assistant()])
+    turn = Turn()
+    pipeline = Pipeline([transport.input(), stt, pair.user(), llm, turn, tts, transport.output(), pair.assistant()])
 
-    busy = Busy()
+    busy = Busy(turn)
     latency = UserBotLatencyObserver()
 
     @latency.event_handler("on_latency_measured")
@@ -172,8 +226,19 @@ async def bot(runner_args: RunnerArguments):
     async def remote(params: FunctionCallParams):
         name = params.function_name
         await show({"type": "tool", "name": name, "label": LABELS.get(name, name), "args": params.arguments})
+        line = turn.filler() if setup.get("filler") and name not in NO_FILLER else None
+        if line:
+            # Spoken only: kept out of the context, so the tool call and its result stay side by side.
+            await params.llm.push_frame(TTSSpeakFrame(line, append_to_context=False), FrameDirection.DOWNSTREAM)
+            logger.info(f"SIFT filler {line!r} before {name}")
+        args = dict(params.arguments or {})
+        if name == "answer_ask":
+            # What the person actually said, so the server can check the answer is their words.
+            said = [m["content"] for m in context.get_messages() if m.get("role") == "user" and isinstance(m.get("content"), str)
+                    and not m["content"].startswith("(")]
+            args["_heard"] = " ".join(said[-3:])
         try:
-            async with http.post(f"{TOOLS}/bot/tool/{name}", json=params.arguments or {}) as r:
+            async with http.post(f"{TOOLS}/bot/tool/{name}", json=args) as r:
                 result = (await r.json()).get("result", "")
         except Exception as error:  # a failed tool is said, never silent
             result = f"That didn't work: {error}"
@@ -232,21 +297,54 @@ async def bot(runner_args: RunnerArguments):
                     f"{event.get('reply') or '(nothing)'}) Tell {person} the result in one or two short spoken sentences, "
                     "starting with what it was about. If it needs their decision, ask that one question last."
                 )
+                turn.reset()
                 await task.queue_frames([LLMMessagesAppendFrame(messages=[{"role": "user", "content": note}], run_llm=True)])
                 await asyncio.sleep(1)  # let the turn start before the next item checks for quiet
 
     workers: list[asyncio.Task] = []
+    started = datetime.now(timezone.utc)
+
+    def add_preload(block: str):
+        """Puts the already-read block into the system message, wherever the conversation is."""
+        if not block:
+            return
+        messages = list(context.get_messages())
+        if messages and messages[0].get("role") == "system":
+            messages[0] = {"role": "system", "content": f"{messages[0]['content']}\n\n{block}"}
+            context.set_messages(messages)
+            logger.info(f"SIFT preload added, {len(block)} chars")
 
     @transport.event_handler("on_client_connected")
     async def _connected(_t, _c):
+        nonlocal started
+        started = datetime.now(timezone.utc)
         logger.info("SIFT call connected")
         workers.extend([asyncio.create_task(follow()), asyncio.create_task(speak_news())])
+        # Wait a moment for the read-ahead so the first answer can use it; if it's slow, greet and add it when ready.
+        try:
+            add_preload(await asyncio.wait_for(asyncio.shield(ahead), timeout=2.5))
+        except asyncio.TimeoutError:
+            ahead.add_done_callback(lambda t: add_preload(t.result()) if not t.cancelled() and not t.exception() else None)
         context.add_message({"role": "user", "content": f"(The call just connected. Greet {person} in a few words.)"})
         await task.queue_frames([LLMRunFrame()])
+
+    def transcript() -> list[dict]:
+        """The person's words and the assistant's, for the server's note of the call."""
+        out = []
+        for m in context.get_messages():
+            if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str) and m["content"].strip():
+                out.append({"role": m["role"], "text": m["content"]})
+        return out
 
     @transport.event_handler("on_client_disconnected")
     async def _disconnected(_t, _c):
         logger.info("SIFT call ended")
+        try:
+            body = {"started": started.isoformat(), "ended": datetime.now(timezone.utc).isoformat(), "turns": transcript()}
+            async with http.post(f"{TOOLS}/bot/call-ended", json=body, timeout=aiohttp.ClientTimeout(total=5)) as r:
+                await r.read()
+        except Exception as error:
+            logger.warning(f"SIFT call note not sent: {error}")
         await task.cancel()
 
     try:

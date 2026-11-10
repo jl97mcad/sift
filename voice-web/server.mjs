@@ -13,6 +13,9 @@ import { join } from "node:path";
 import { isPhantom, looksUnfinished, pieces, plain, progressLine, settledLength, speakPiece, stepLabel, transcribe } from "./speech.mjs";
 import { respond, summarise, systemPrompt, toolsFor, workersOf } from "./front.mjs";
 import { paseo, skill } from "./tools.mjs";
+import { contextBlock, digestSession, digestSessions } from "./digest.mjs";
+import { answerAsk, answering } from "./asks.mjs";
+import { recall, recentMemory, remembering, summariseCall, writeMemory } from "./memory.mjs";
 
 const PORT = Number(process.env.PORT ?? 8771);
 // The Pipecat bot (pipecat/bot.py): the page's WebRTC offer goes to it; it calls the tools on BOT_PORT.
@@ -178,25 +181,18 @@ function score(want, agent) {
   return want.length ? hits.length / want.length : 0;
 }
 
-/** Live sessions on every daemon, by host: short id, title, status, seat. */
-async function sessions() {
-  const lines = [];
-  for (const { url, name } of daemonsOf()) {
-    try {
-      const live = (await liveOn(url)).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
-      lines.push(`On ${name}: ${live.length} live, ${live.filter((a) => a.status === "running").length} running`);
-      for (const a of live.slice(0, 40)) lines.push(`${name} | ${a.id.slice(0, 8)} | ${titleOf(a).slice(0, 90)} | ${a.status}${a.labels?.seat ? ` | seat ${a.labels.seat}` : ""}`);
-    } catch (error) { lines.push(`On ${name}: couldn't read it (${error.message})`); }
-  }
-  return lines.length ? lines.join("\n") : "No live sessions.";
+/** Live sessions on every daemon, read at once and digested: counts, seats, what's running, idle plan leads. */
+async function sessions({ compact = false } = {}) {
+  const hosts = await Promise.all(daemonsOf().map(async ({ url, name }) => {
+    try { return { name, agents: await liveOn(url) }; } catch (error) { return { name, error: error.message }; }
+  }));
+  return digestSessions(hosts, { compact });
 }
 
-/** A session's latest prompts and replies. */
+/** A session's latest ask and reply, with its steps since collapsed to a line. */
 async function said(client, agent, host) {
-  const page = await client.agents.ref(agent.id).timeline.refetch({ direction: "tail", limit: 60, projection: "projected" });
-  const lines = page.entries.map((e) => e.item).filter((i) => (i.type === "assistant_message" || i.type === "user_message") && i.text)
-    .slice(-6).map((i) => `${i.type === "user_message" ? "Asked" : "Said"}: ${i.text.slice(0, 900)}`);
-  return `${titleOf(agent)} (${agent.status}${host ? `, on ${host}` : ""})\n${lines.join("\n") || "Nothing said yet."}`;
+  const page = await client.agents.ref(agent.id).timeline.refetch({ direction: "tail", limit: 80, projection: "projected" });
+  return digestSession(agent, page.entries.map((e) => e.item), host);
 }
 
 /** The latest prompts and replies of the session that best matches the name, on any host. */
@@ -250,6 +246,58 @@ function jobStatus() {
     return `${job.to}, "${job.task}": ${job.status}${job.status === "running" && step ? `, now ${step.toLowerCase()}` : ""}, ${minutes} min ago.` +
       (job.reply ? ` Reply: ${job.reply.slice(0, 800)}` : "");
   }).join("\n");
+}
+
+// ---- Read at the start of a call, so the common questions need no tool.
+const zone = () => config.timezone || config.phoneTimezone;
+/** A promise's text, or an "unavailable" line once ms have passed. */
+const within = (promise, ms, label) => Promise.race([Promise.resolve(promise).catch((error) => `unavailable: ${label} (${error.message})`),
+  sleep(ms).then(() => `unavailable: ${label} took longer than ${ms / 1000} s`)]);
+const preloadSources = () => (config.sources ?? []).filter((s) => s.preload);
+
+/** The "Already read for this call" block: needs, sessions, preload sources and recent call notes, in parallel. */
+async function preload() {
+  const started = Date.now();
+  const [needs, live, sources, memory] = await Promise.all([
+    config.needs?.command ? within(needsQueue(), 4000, "the needs queue") : "",
+    within(sessions({ compact: true }), 4000, "sessions"),
+    Promise.all(preloadSources().map(async (s) => ({ name: s.name, text: await within(readSource({ name: s.name }), 4000, s.name) }))),
+    remembering(config) ? recentMemory(config).catch(() => "") : "",
+  ]);
+  const at = new Date().toLocaleString("en-GB", { timeZone: zone(), weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
+  const block = contextBlock({ at, needs, sessions: live, sources, memory, person: config.person });
+  console.log(`preload ${block.length} chars in ${Date.now() - started} ms`);
+  return block;
+}
+
+/** "Catch me up" in one call, read fresh: needs, sessions and the preload sources together. */
+async function catchUp() {
+  const [needs, live, sources] = await Promise.all([
+    config.needs?.command ? within(needsQueue(), 15_000, "the needs queue") : "",
+    within(sessions({ compact: true }), 15_000, "sessions"),
+    Promise.all(preloadSources().map(async (s) => `${s.name}:\n${String(await within(readSource({ name: s.name }), 15_000, s.name)).slice(0, 2000)}`)),
+  ]);
+  return [needs && `Needs ${config.person}:\n${needs}`, `Sessions:\n${live}`, ...sources].filter(Boolean).join("\n\n").slice(0, 7000);
+}
+
+const answered = []; // asks answered by voice ({ at, plan, title }), for the call's memory note
+async function answerAskTool(args) {
+  if (!answering(config)) return "Answering asks by voice isn't set up here.";
+  const result = await answerAsk(config, args ?? {});
+  if (/^(Recorded|Dry run)/.test(result)) answered.push({ at: Date.now(), plan: args.plan, note: result.slice(0, 200) });
+  answered.splice(0, Math.max(0, answered.length - 50));
+  return result;
+}
+
+/** A finished call's memory note: one cheap model call, appended to the day's file. */
+async function remember({ started, turns }) {
+  const at = Date.parse(started) || Date.now();
+  const asks = answered.filter((a) => a.at >= at).map((a) => `- ${a.plan}: ${a.note}`).join("\n");
+  const t0 = Date.now();
+  const summary = await summariseCall(config, turns, asks ? `Asks answered in this call (from the tool):\n${asks}` : "");
+  if (!summary) return console.log("memory: nothing to note for that call");
+  const file = await writeMemory(config, at, summary);
+  console.log(`memory wrote ${summary.split("\n").length} lines to ${file} in ${Date.now() - t0} ms`);
 }
 
 /** Hands one task to the worker and follows it until it finishes, then speaks the result. */
@@ -397,6 +445,8 @@ async function turn(request, response, typed) {
           return `${[...new Set(lines)].join(", and ")}. I'll come back to you when I hear.`;
         },
         paseo: (args) => paseo(config, args, open), skill: (args) => skill(config, args),
+        catch_up: catchUp, answer_ask: (args) => answerAskTool({ ...args, _heard: `${history.filter((m) => m.role === "user" && !String(m.content).startsWith("(")).slice(-3, -1).map((m) => m.content).join(" ")} ${heard}` }),
+        recall: (args) => recall(config, args),
         end_conversation: () => { emit({ type: "end" }); return "Ended. The phone stops listening after your goodbye."; } }, (delta) => {
         text += delta;
         emit({ type: "text", text });
@@ -489,13 +539,24 @@ for (const address of Object.values(config.paseo?.hosts ?? {})) open(address).ca
 const botTools = {
   sessions, read_session: readSession, read_source: readSource, needs_queue: needsQueue, job_status: jobStatus,
   delegate: (args) => delegate(args, args?.task ?? ""), paseo: (args) => paseo(config, args, open), skill: (args) => skill(config, args),
+  catch_up: catchUp, answer_ask: answerAskTool, recall: (args) => recall(config, args),
 };
 createServer(async (request, response) => {
   try {
     if (request.method === "GET" && request.url === "/bot/setup") {
       // Earlier work this server has seen, so a new call can pick up "how's that going?".
       const earlier = jobs.length ? `\n\nWork handed off earlier today (job_status has the latest):\n${jobStatus()}` : "";
-      return send(response, 200, { person: config.person, assistant: config.assistant ?? "", timezone: config.timezone, prompt: systemPrompt(config) + earlier, tools: toolsFor(config) });
+      return send(response, 200, { person: config.person, assistant: config.assistant ?? "", timezone: config.timezone, prompt: systemPrompt(config) + earlier, tools: toolsFor(config), filler: config.filler === true });
+    }
+    // Read when the call starts, so "what needs me" and "what's running" need no tool.
+    if (request.method === "GET" && request.url === "/bot/context") return send(response, 200, { context: config.preload ? await preload() : "" });
+    // The call's words, once it ends: noted for the next call when config.memory.dir is set.
+    if (request.method === "POST" && request.url === "/bot/call-ended") {
+      let call = {};
+      try { call = JSON.parse((await body(request)).toString() || "{}"); } catch {}
+      send(response, 202, { ok: true });
+      if (remembering(config)) remember(call).catch((error) => console.error(`memory: ${error.message}`));
+      return;
     }
     if (request.method === "GET" && request.url === "/bot/events") {
       response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
@@ -513,7 +574,8 @@ createServer(async (request, response) => {
       try { args = JSON.parse((await body(request)).toString() || "{}"); } catch {}
       const started = Date.now();
       const result = String(await handler(args));
-      console.log(`tool ${tool[1]} ${JSON.stringify(args).slice(0, 200)} -> ${result.length} chars in ${Date.now() - started} ms`);
+      const { _heard, ...shown } = args;
+      console.log(`tool ${tool[1]} ${JSON.stringify(shown).slice(0, 200)} -> ${result.length} chars in ${Date.now() - started} ms`);
       return send(response, 200, { result });
     }
     send(response, 404, { error: "Not found" });
