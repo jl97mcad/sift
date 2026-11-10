@@ -158,7 +158,7 @@ async function readSession({ name }) {
       const client = await daemon(url);
       const { entries } = await client.agents.list();
       const live = entries.map((e) => e.agent).filter((a) => a.status !== "closed" && !a.archivedAt);
-      const match = live.find((a) => a.labels?.seat === want) ?? live.find((a) => titleOf(a).toLowerCase().includes(want));
+      const match = live.find((a) => a.labels?.seat?.toLowerCase() === want) ?? live.find((a) => titleOf(a).toLowerCase().includes(want));
       if (!match) continue;
       const page = await client.agents.ref(match.id).timeline.refetch({ direction: "tail", limit: 60, projection: "projected" });
       const said = page.entries.map((e) => e.item).filter((i) => (i.type === "assistant_message" || i.type === "user_message") && i.text)
