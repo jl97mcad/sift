@@ -185,6 +185,7 @@ import { join } from "node:path";
   assert.equal(scoreMemory(files, "cloudflare")[0].day, "2026-11-10");
   assert.deepEqual(scoreMemory(files, "what did we say"), []);
   assert.equal(bullets("Here you go:\n- One\n* Two token: abc\nnot a bullet"), "- One\n- Two token: [redacted]");
+  assert.equal(transcriptText([{ role: "user", text: "the password is hunter2" }], "Jon"), "Jon: the password is [redacted]");
   assert.equal(transcriptText([{ role: "user", text: "(The call just connected. Greet Jon.)" }, { role: "user", text: "What needs me?" }, { role: "assistant", text: "Two things." }], "Jon"), "Jon: What needs me?\nAssistant: Two things.");
   const dir = await mkdtemp(join(tmpdir(), "voice-memory-"));
   const cfg = { person: "Jon", timezone: "Europe/London", memory: { dir: join(dir, "m") } };

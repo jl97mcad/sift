@@ -95,7 +95,7 @@ export function transcriptText(turns, person = "Person") {
     if (!text || /^\(The call just connected/.test(text)) return null;
     if (/^\(Not said by/.test(text)) return `News: ${short(text.replace(/^\(Not said by [^.]*\.\s*/, ""), 600)}`;
     return `${t.role === "user" ? person : "Assistant"}: ${short(text, 1200)}`;
-  }).filter(Boolean).join("\n").slice(-12_000);
+  }).filter(Boolean).map(scrub).join("\n").slice(-12_000); // secrets never leave for the summary model
 }
 
 export const SUMMARY_PROMPT = (person) => `You write a short memory note of a voice call between ${person} and their assistant, for the assistant to read at the next call.
