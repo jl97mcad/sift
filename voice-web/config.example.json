@@ -48,6 +48,12 @@
     "answerCommand": "",
     "dryRun": true
   },
+  "chief": {
+    "_note": "Optional. worker names one of the workers above (a session found by seat or title): set it to turn on chief-of-staff mode (set_mode, note_to_chief), where the person's words go to that session verbatim. dryRun (or SIFT_CHIEF_DRY_RUN=1) logs each message instead of sending it.",
+    "worker": "",
+    "label": "Chief of staff",
+    "dryRun": true
+  },
   "memory": {
     "_note": "Optional. dir turns on call notes and recall; dejaCommand reads the query on stdin.",
     "dir": "",

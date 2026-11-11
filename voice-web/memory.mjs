@@ -92,8 +92,11 @@ const short = (text, n) => { const t = String(text ?? "").replace(/\s+/g, " ").t
 export function transcriptText(turns, person = "Person") {
   return (turns ?? []).map((t) => {
     const text = cleanText(t.text ?? t.content ?? "");
-    if (!text || /^\(The call just connected/.test(text)) return null;
+    if (!text || /^\((The call just connected|Chief-of-staff mode o)/.test(text)) return null;
     if (/^\(Not said by/.test(text)) return `News: ${short(text.replace(/^\(Not said by [^.]*\.\s*/, ""), 600)}`;
+    // Chief-of-staff mode: what was sent (or scrapped) is marked, so the note says it went to the chief.
+    const chief = text.match(/^\((To chief of staff|Sent to chief of staff|Scrapped, not sent to chief of staff)\)\s*([\s\S]*)$/);
+    if (chief) return `${person} (${chief[1].toLowerCase()}): ${short(chief[2], 1200)}`;
     return `${t.role === "user" ? person : "Assistant"}: ${short(text, 1200)}`;
   }).filter(Boolean).map(scrub).join("\n").slice(-12_000); // secrets never leave for the summary model
 }
@@ -103,6 +106,7 @@ Write up to 10 bullet lines starting "- " (fewer for a short call; never pad, an
 - Decisions ${person} made about their work.
 - Open asks answered: only those listed below as answered through the tool, never questions the assistant answered.
 - Things ${person} explicitly asked the assistant to remember.
+- Messages ${person} sent to their chief of staff (lines marked "sent to chief of staff"): one line each, starting "To chief of staff:", with what it replied. Leave out ones marked scrapped.
 - Open threads to pick up next time.
 Name what each is about (plan numbers, session names). Leave out greetings, small talk and anything said to someone else in the room.
 Use only what the transcript says. Never include passwords, keys, tokens or other secrets. No heading, no preamble.`;
@@ -110,7 +114,8 @@ Use only what the transcript says. Never include passwords, keys, tokens or othe
 /** One cheap model call: the call's summary as bullet lines, or "" when there was nothing to summarise. */
 export async function summariseCall(config, turns, extra = "") {
   const text = transcriptText(turns, config.person);
-  if (!text.split("\n").some((l) => l.startsWith(`${config.person ?? "Person"}:`))) return "";
+  const who = config.person ?? "Person";
+  if (!text.split("\n").some((l) => l.startsWith(`${who}:`) || l.startsWith(`${who} (`))) return "";
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: { Authorization: `Bearer ${await key()}`, "Content-Type": "application/json", "X-Title": config.assistant || "Voice assistant" },

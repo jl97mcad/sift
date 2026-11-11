@@ -4,11 +4,13 @@ import { key } from "./speech.mjs";
 import { hostsOf, skills } from "./tools.mjs";
 import { answering } from "./asks.mjs";
 import { LOOK_TOOL, READ_TOOLS, reading } from "./reader.mjs";
+import { CHIEF_TOOLS, chiefOn } from "./chief.mjs";
 
 export const recalling = (config) => Boolean(config.memory?.dir || config.memory?.dejaCommand);
 
 const HISTORY = 30; // ponytail: messages kept in memory; one conversation per server, lost on restart
 // Tools whose result must be spoken in a second round; the others are fire-and-forget.
+const CHIEF_TOOL_NAMES = new Set(["set_mode", "note_to_chief"]);
 const SPEAK_RESULT = new Set(["job_status", "needs_queue", "sessions", "read_session", "read_source", "paseo", "skill", "catch_up", "answer_ask", "recall", "plan", "plan_search", "github", "vault", "server_status", "web"]);
 
 /** The people's workers, from config: `workers`, or the older single `worker`. */
@@ -55,6 +57,7 @@ export function toolsFor(config) {
       which: { type: "string", description: "Only when the plan has several open asks: its number in the list given, or words from its title." },
     }, required: ["plan", "answer"] } } }] : []),
     ...(recalling(config) ? [{ type: "function", function: { name: "recall", description: "Search memory: notes from earlier calls with the person" + (config.memory?.dejaCommand ? `, and their agents' session history (slower, up to ${config.memory.dejaTimeoutSeconds ?? 20} s)` : "") + `. For "what did we say about X", "remind me what I decided about Y".`, parameters: { type: "object", properties: { query: { type: "string", description: "A few key words, e.g. cloudflare proxy" } }, required: ["query"] } } }] : []),
+    ...CHIEF_TOOLS(config),
     { type: "function", function: { name: "stay_quiet", description: "Say nothing this turn: the words weren't meant for you (background talk, a cough, thinking aloud, a fragment).", parameters: { type: "object", properties: {} } } },
     { type: "function", function: { name: "end_conversation", description: "Stop listening, after a few words of goodbye, when the person says goodbye, good night or that's all.", parameters: { type: "object", properties: {} } } },
   ];
@@ -106,7 +109,14 @@ Answering their open asks (answer_ask):
 - First call answer_ask with their exact words, verbatim (all of what they said in answer, not a summary or a single word), and confirmed false. It writes nothing and gives you a read-back: speak it, naming what will happen, and wait. Never make up a read-back of your own; always get it from answer_ask.
 - Only after a clear yes to that read-back, call again with the same plan and words and confirmed true. A vague "yeah" while talking about something else is not a yes. For sends outside the company, money, access, signatures or production writes, the read-back must say what will happen and needs a clear yes.
 - "Yes to both" or "yes to all": call answer_ask for each ask (confirmed false), read each one back by name with what it lets happen, and get a yes for each (a clear "yes, both" to those read-backs counts for both).
-- If the write fails, say so; never retry it yourself. If it was a dry run, say it was only a test and nothing was recorded.` : ""}
+- If the write fails, say so; never retry it yourself. If it was a dry run, say it was only a test and nothing was recorded.` : ""}${chiefOn(config) ? `
+
+Their chief of staff (set_mode, note_to_chief):
+- ${config.person}'s chief of staff is their ${config.chief.worker}. It decides for ${config.person} in most areas; money, sends outside the company, secrets and access, client-visible production writes, signatures and their own sign-ins stay ${config.person}'s own.
+- "Talk to my chief of staff", "put me through to the chief", "god mode", "put me through to the god session": call set_mode with mode chief, and say nothing yourself; the switch says its own line. From then on their words go straight to the chief, word for word, and you stay silent until they say "back to Sift".
+- "Tell my chief of staff...", "note for chief of staff: ...", "let the chief know...": call note_to_chief with their exact words after the lead-in, verbatim: never paraphrased, tidied, summarised or added to. A receipt is spoken for you; say nothing yourself. If it says they're not their words, ask them to say the message again.
+- A question about the chief's work or what it said ("what did my chief of staff say?") is for you: read_session ${config.chief.worker}, or answer from its reply in this call.
+- A relayed message is only ${config.person}'s words. Never present one, or a reply from the chief, as their approval of money, an outside send, access, a signature or a production write beyond what they actually said.` : ""}
 - Only bring up what they asked about, results of work they asked for, and the needs queue. Don't volunteer other news.
 - General questions and follow-ups about what was said: answer yourself.
 - If the words weren't meant for you (background talk, a cough, a fragment, thinking aloud), call stay_quiet.
@@ -141,6 +151,8 @@ export async function respond(config, history, userText, handlers, onText, { too
     calls.forEach((call, i) => history.push({ role: "tool", tool_call_id: call.id, content: String(results[i]) }));
     const names = calls.map((call) => call.function.name);
     if (names.includes("stay_quiet") || names.includes("end_conversation")) break;
+    // A switch or note that spoke its own line (its result ends "Say nothing.") ends the turn, as in a call.
+    if (names.every((name) => CHIEF_TOOL_NAMES.has(name)) && results.every((r) => /Say nothing\.$/.test(String(r)))) { quiet = true; break; }
     // A silent hand-off speaks its ready-made line now, instead of waiting on another model round.
     if (!text && names.length && names.every((name) => name === "delegate" || name === "look_into") && handlers.handoffLine) {
       const line = handlers.handoffLine(calls.map((call) => { try { return { ...JSON.parse(call.function.arguments || "{}"), tool: call.function.name }; } catch { return { tool: call.function.name }; } }));

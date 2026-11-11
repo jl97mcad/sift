@@ -17,6 +17,7 @@ import { contextBlock, digestSession, digestSessions } from "./digest.mjs";
 import { answerAsk, answering } from "./asks.mjs";
 import { look, reading, READ_HANDLERS } from "./reader.mjs";
 import { recall, recentMemory, remembering, summariseCall, writeMemory } from "./memory.mjs";
+import { chiefDryRun, chiefLabel, chiefOn, chiefWorker, notTheirWords, replyAfter, replyLine, spokenSummary, wrap } from "./chief.mjs";
 
 const PORT = Number(process.env.PORT ?? 8771);
 // The Pipecat bot (pipecat/bot.py): the page's WebRTC offer goes to it; it calls the tools on BOT_PORT.
@@ -135,7 +136,7 @@ async function session(worker, plan) {
   return { client, agent: found.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0] };
 }
 
-const view = (job) => ({ id: job.id, task: job.task, to: job.to, status: job.status, steps: job.steps.slice(-4), reply: job.reply, started: job.started });
+const view = (job) => ({ id: job.id, task: job.task, to: job.to, status: job.status, steps: job.steps.slice(-4), reply: job.reply, started: job.started, ...(job.chief ? { chief: true } : {}) });
 
 function delegate({ task, to, plan }, heard) {
   const workers = workersOf(config);
@@ -339,11 +340,12 @@ async function remember({ started, call, turns }) {
 /** Hands one task to the worker and follows it until it finishes, then speaks the result. */
 async function run(job) {
   // A moment's grace: a turn abandoned within it (the person carried on talking) never starts its task.
-  await sleep(1200);
+  // A chief message has already had its own grace window in the call.
+  if (!job.chief) await sleep(1200);
   if (job.cancelled) { job.status = "cancelled"; broadcast({ type: "job", job: view(job) }); return; }
   job.status = "running";
   broadcast({ type: "job", job: view(job) });
-  const prompt = `(${config.person}, by voice through their assistant. Do this, then reply in a few short plain sentences; your reply is summarised aloud.)\n\n${job.task}`;
+  const prompt = job.prompt ?? `(${config.person}, by voice through their assistant. Do this, then reply in a few short plain sentences; your reply is summarised aloud.)\n\n${job.task}`;
   if (job.worker?.command) {
     job.steps = [`Asking ${job.to}`];
     broadcast({ type: "job", job: view(job) });
@@ -362,7 +364,10 @@ async function run(job) {
     const agent = client.agents.ref(live.id);
     let finished = false;
     let failure = null;
-    agent.run(prompt, { timeoutMs: 15 * 60_000 }).then(() => (finished = true), (error) => ((failure = error), (finished = true)));
+    // A chief message never interrupts the session's running turn: it's steered in, as `paseo send` does for agents.
+    const options = job.chief ? { timeoutMs: 30 * 60_000, activeTurnBehavior: "steer" } : { timeoutMs: 15 * 60_000 };
+    agent.run(prompt, options).then(() => (finished = true), (error) => ((failure = error), (finished = true)));
+    if (job.chief) console.log(`chief sent ${job.task.length} chars to ${job.worker.name} (${live.id.slice(0, 8)})`);
     let toolCalls = 0;
     let stepSince = Date.now();
     let warned = false;
@@ -372,12 +377,11 @@ async function run(job) {
       await sleep(1500);
       const done = finished;
       const page = await agent.timeline.refetch({ direction: "tail", limit: 300, projection: "projected" });
-      let start = -1;
-      page.entries.forEach((entry, index) => {
-        if (entry.item.type === "user_message" && (entry.item.text ?? "").includes(job.task)) start = index + 1;
-      });
-      if (start >= 0) {
-        const after = page.entries.slice(start).map((entry) => entry.item);
+      // A chief message's reply ends at the next message, which gets its own.
+      const mine = replyAfter(page.entries.map((entry) => entry.item), job.chief ? job.prompt : job.task, { bounded: Boolean(job.chief) });
+      if (mine) {
+        const after = mine.items;
+        job.followed = mine.followed;
         const labels = after.map(stepLabel).filter(Boolean).filter((label, i, all) => label !== all[i - 1]);
         const calls = after.filter((item) => item.type === "tool_call").length;
         if (calls !== toolCalls) { toolCalls = calls; stepSince = Date.now(); warned = false; }
@@ -386,15 +390,15 @@ async function run(job) {
           broadcast({ type: "job", job: view(job) });
           // News on events, tapering: a new step after 20 s of work, then less and less often.
           const step = labels.at(-1);
-          if (step && step !== "Thinking" && Date.now() - job.started > 20_000 && Date.now() - lastNews > 30_000 * (told + 1)) {
+          if (!job.chief && step && step !== "Thinking" && Date.now() - job.started > 20_000 && Date.now() - lastNews > 30_000 * (told + 1)) {
             told += 1;
             lastNews = Date.now();
             await tell(`${job.to[0].toUpperCase()}${job.to.slice(1)} is ${step.replace(/^\w/, (c) => c.toLowerCase())}.`);
           }
         }
-        job.reply = after.filter((item) => item.type === "assistant_message" && item.text).map((item) => item.text).join("\n\n");
-        // One spoken heads-up per step that runs long, so silence never means "stuck?".
-        if (!done && !warned && Date.now() - stepSince > 90_000) {
+        job.reply = mine.reply;
+        // One spoken heads-up per step that runs long, so silence never means "stuck?". A chief turn just runs.
+        if (!job.chief && !done && !warned && Date.now() - stepSince > 90_000) {
           warned = true;
           await tell(`${job.to}: ${progressLine(job.steps.at(-1), (Date.now() - stepSince) / 1000)}`);
         }
@@ -420,12 +424,65 @@ async function offer(request, response) {
 
 /** Speaks a finished job's result: a short summary, or an honest one-line fallback. */
 async function announce(job) {
+  if (job.chief) return announceChief(job);
   // An open call speaks it in its own words and keeps the answer for follow-ups.
   if (bots.size) return toBots({ type: "finished", to: job.to, task: job.task, status: job.status, reply: job.reply.slice(0, 3000) });
   await serial(async () => {
     const text = (await summarise(config, history, job).catch(() => "")) || fallbackLine(job);
     broadcast({ type: "say", text, audio: await voice(text) });
   });
+}
+
+// ---- Chief-of-staff mode (chief.mjs): the person's words go to the chief verbatim; replies come back short.
+/**
+ * One message to the chief of staff, after its grace window in the call: wrapped, then sent as one user
+ * message and followed like a delegated task. In a dry run it is only logged, and a fake reply can be
+ * injected with /bot/chief/fake-reply.
+ */
+function chiefSend({ text, via } = {}) {
+  const worker = chiefWorker(config, workersOf(config));
+  if (!worker) return { ok: false, result: "No chief of staff is set up here." };
+  const words = String(text ?? "").replace(/\s+/g, " ").trim().slice(0, 20_000); // a guard, far beyond any spoken message
+  if (!words) return { ok: false, result: "Nothing to send." };
+  const job = { id: `job-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, task: words, to: "your chief of staff", worker, chief: true, via: via === "note" ? "note" : "chief",
+    prompt: wrap(config.person, words), status: "running", steps: [], reply: "", started: Date.now() };
+  jobs.push(job);
+  jobs.splice(0, Math.max(0, jobs.length - 20));
+  if (chiefDryRun(config)) {
+    job.dry = true;
+    job.steps = ["Dry run: logged, not sent"];
+    console.log(`chief DRY RUN, nothing sent. Would send to ${worker.name} (${worker.seat ? `seat ${worker.seat}` : worker.title ?? "session"}, ${String(worker.url ?? "").replace(/\?.*$/, "")}) as one user message: ${JSON.stringify(job.prompt)}`);
+    broadcast({ type: "job", job: view(job) });
+    return { ok: true, dryRun: true, id: job.id, result: "Dry run: logged, not sent." };
+  }
+  broadcast({ type: "job", job: view(job) });
+  run(job).catch((error) => console.error("chief job failed", error));
+  return { ok: true, id: job.id, result: "Sent." };
+}
+
+/** Dry run only: a made-up reply from the chief, spoken through the same path as a real one. */
+function chiefFakeReply({ text, id } = {}) {
+  const job = id ? jobs.find((j) => j.id === id && j.dry) : jobs.filter((j) => j.dry && j.status === "running").at(-1);
+  if (!job) return { ok: false, result: "No dry-run chief message is waiting for a reply." };
+  job.reply = String(text ?? "").trim();
+  job.status = "done";
+  job.steps = [...job.steps, "Fake reply injected"];
+  broadcast({ type: "job", job: view(job) });
+  console.log(`chief DRY RUN fake reply for ${job.id}: ${job.reply.length} chars`);
+  announceChief(job).catch((error) => console.error(`chief reply: ${error.message}`));
+  return { ok: true, id: job.id, result: "Injected." };
+}
+
+/** The chief's reply, spoken short in an open call (the full text goes on the card), or as a clip with no call. */
+async function announceChief(job) {
+  let line;
+  if (job.status === "failed") line = `That message didn't reach your chief of staff. ${job.reply.replace(/^It (failed|couldn't start): /, "")}`;
+  else if (!job.reply.trim() && job.followed) return console.log(`chief ${job.id}: no reply of its own; answered with the next message`);
+  else if (!job.reply.trim()) line = "Your chief of staff finished without a reply.";
+  else line = replyLine(await spokenSummary(config, job.reply));
+  console.log(`chief reply ${job.id} spoken as ${line.length} chars`);
+  if (bots.size) return toBots({ type: "chief_reply", id: job.id, line, reply: job.reply.slice(0, 4000), status: job.status });
+  broadcast({ type: "say", text: line, audio: await voice(line) });
 }
 
 /** A short honest line when a summary couldn't be made. */
@@ -486,6 +543,7 @@ async function turn(request, response, typed) {
           return answerAskTool({ ...args, _heard: said.slice(-3).join(" "), _last: said.at(-1) ?? "", _turn: said.length, _call: "text" });
         },
         recall: (args) => recall(config, args),
+        set_mode: () => "Chief-of-staff mode works only in a voice call. Say so.", note_to_chief: () => "Notes to the chief of staff work only in a voice call. Say so.",
         end_conversation: () => { emit({ type: "end" }); return "Ended. The phone stops listening after your goodbye."; } }, (delta) => {
         text += delta;
         emit({ type: "text", text });
@@ -586,7 +644,8 @@ createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/bot/setup") {
       // Earlier work this server has seen, so a new call can pick up "how's that going?".
       const earlier = jobs.length ? `\n\nWork handed off earlier today (job_status has the latest):\n${jobStatus()}` : "";
-      return send(response, 200, { person: config.person, assistant: config.assistant ?? "", timezone: config.timezone, prompt: systemPrompt(config) + earlier, tools: toolsFor(config), filler: config.filler === true });
+      const chief = chiefOn(config) ? { label: chiefLabel(config), dryRun: chiefDryRun(config) } : null;
+      return send(response, 200, { person: config.person, assistant: config.assistant ?? "", timezone: config.timezone, prompt: systemPrompt(config) + earlier, tools: toolsFor(config), filler: config.filler === true, chief });
     }
     // Read when the call starts, so "what needs me" and "what's running" need no tool.
     if (request.method === "GET" && request.url === "/bot/context") return send(response, 200, { context: config.preload ? await preload() : "" });
@@ -605,6 +664,20 @@ createServer(async (request, response) => {
       const ping = setInterval(() => response.write(": ping\n\n"), 25_000);
       request.on("close", () => { clearInterval(ping); bots.delete(response); });
       return;
+    }
+    // Chief-of-staff mode: is a quick note their words, send a message after its window, and (dry run only) a fake reply.
+    const chief = request.method === "POST" && request.url.match(/^\/bot\/chief\/(check|send|fake-reply)$/);
+    if (chief) {
+      if (!chiefOn(config)) return send(response, 404, { ok: false, result: "Chief-of-staff mode isn't set up here." });
+      if (chief[1] === "fake-reply" && !chiefDryRun(config)) return send(response, 404, { ok: false, result: "Fake replies are for dry runs only." });
+      let args = {};
+      try { args = JSON.parse((await body(request)).toString() || "{}"); } catch {}
+      if (chief[1] === "check") {
+        const problem = notTheirWords(args.text, args._heard);
+        console.log(`chief check ${problem ? "refused: not their words" : "ok"} (${String(args.text ?? "").length} chars)`);
+        return send(response, 200, problem ? { ok: false, result: problem } : { ok: true, result: "Their words." });
+      }
+      return send(response, 200, chief[1] === "send" ? chiefSend(args) : chiefFakeReply(args));
     }
     const tool = request.method === "POST" && request.url.match(/^\/bot\/tool\/([a-z_]+)$/);
     if (tool) {
