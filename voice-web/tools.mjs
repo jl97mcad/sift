@@ -199,7 +199,11 @@ function larkRun(config, words, timeout = 20_000) {
   return new Promise((resolve) => execFile("ssh", ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
     "-o", "ConnectTimeout=8", host, command], { timeout, maxBuffer: 4 << 20 }, (error, stdout, stderr) => {
     if (error && !stdout) return resolve({ error: String(stderr || error.message).slice(0, 400) });
-    try { resolve({ json: JSON.parse(stdout) }); } catch { resolve({ error: String(stdout || stderr).slice(0, 400) }); }
+    // The CLI can print a notice line before the JSON; take the object, not the whole output.
+    const text = String(stdout ?? "");
+    const start = text.indexOf("{"), end = text.lastIndexOf("}");
+    try { resolve({ json: JSON.parse(start >= 0 ? text.slice(start, end + 1) : text) }); }
+    catch { resolve({ error: String(text || stderr).slice(0, 400) }); }
   }));
 }
 

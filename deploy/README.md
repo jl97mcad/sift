@@ -17,16 +17,12 @@ comment `sift-voice@vps`; nothing else of root's is available to it.
 ## From the Mac
 
 ```sh
-git -C ~/Developer/sift-service archive --format=tar.gz -o /tmp/sift-release.tar.gz <sha>
+SHA=$(git -C ~/Developer/sift-service rev-parse --short HEAD)
+git -C ~/Developer/sift-service archive --format=tar.gz -o /tmp/sift-release.tar.gz "$SHA"
 scp /tmp/sift-release.tar.gz vps:/tmp/
-ssh vps "tar -xzf /tmp/sift-release.tar.gz -C /tmp/sift-deploy --strip-components=1 2>/dev/null || true"
-```
-
-Simplest: push the tarball and run the installer from a checkout of the same sha:
-
-```sh
-scp /tmp/sift-release.tar.gz vps:/tmp/
-ssh vps 'install -d /tmp/sift-deploy && tar -xzf /tmp/sift-release.tar.gz -C /tmp/sift-deploy && /tmp/sift-deploy/deploy/install-release.sh <sha> /tmp/sift-release.tar.gz'
+ssh vps "rm -rf /tmp/sift-deploy && install -d /tmp/sift-deploy \
+  && tar -xzf /tmp/sift-release.tar.gz -C /tmp/sift-deploy \
+  && /tmp/sift-deploy/deploy/install-release.sh $SHA /tmp/sift-release.tar.gz"
 ```
 
 The installer builds dependencies, switches `current`, restarts both units (the server drains open

@@ -30,7 +30,11 @@ const MAX_AUDIO = 20 * 1024 * 1024;
 // SIFT_CONFIG (default ./config.json) and SIFT_STATE (default ./state).
 const CONFIG = process.env.SIFT_CONFIG || new URL("./config.json", import.meta.url).pathname;
 const STATE = process.env.SIFT_STATE || new URL("./state", import.meta.url).pathname;
-const VERSION = process.env.SIFT_VERSION || (await readFile(new URL("./VERSION", import.meta.url), "utf8").catch(() => "")).trim() || "dev";
+// The installer writes VERSION at the release root (../VERSION); a dev checkout may have one beside the code.
+const VERSION = process.env.SIFT_VERSION
+  || (await readFile(new URL("../VERSION", import.meta.url), "utf8").catch(() => "")).trim()
+  || (await readFile(new URL("./VERSION", import.meta.url), "utf8").catch(() => "")).trim()
+  || "dev";
 const config = JSON.parse(await readFile(CONFIG, "utf8").catch(() =>
   readFile(new URL("./config.example.json", import.meta.url), "utf8")));
 const page = await readFile(new URL("./index.html", import.meta.url));
