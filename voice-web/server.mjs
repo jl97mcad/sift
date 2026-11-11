@@ -670,7 +670,7 @@ const page_server = createServer(async (request, response) => {
       const [keyOk, pipecatOk] = await Promise.all([
         key().then(() => true).catch(() => false),
         new Promise((done) => {
-          const socket = netConnect(PIPECAT_ADDR.hostname, Number(PIPECAT_ADDR.port || 80), { timeout: 400 });
+          const socket = netConnect({ host: PIPECAT_ADDR.hostname, port: Number(PIPECAT_ADDR.port || 80), timeout: 400 });
           socket.once("connect", () => { socket.destroy(); done(true); });
           socket.once("error", () => done(false));
           socket.once("timeout", () => { socket.destroy(); done(false); });

@@ -40,8 +40,12 @@ assert.ok(plan(cfg, { command: "stop --all", confirmed: true }).refused);
 assert.deepEqual(plan(cfg, { command: "stop abc", confirmed: true }).args.slice(3), ["stop", "abc"]);
 
 // Lark reads: invented JSON, no CLI and no network. The tool only ever lists, searches and reads.
-import { lark, larkChatRows, larkMessageRows, larkText } from "./tools.mjs";
+import { lark, larkChatRows, larkMessageRows, larkText, parseLarkOut } from "./tools.mjs";
 assert.equal(await lark({}, {}), "Lark isn't set up on this host.");
+// The CLI's notices and stderr-wrapped auth errors still become plain text for the model.
+assert.deepEqual(parseLarkOut('skills out of sync\n{"ok":false,"error":{"subtype":"token_missing"}}'), { json: { ok: false, error: { subtype: "token_missing" } } });
+assert.match(larkText(parseLarkOut('{"ok":false,"error":{"subtype":"token_missing"}}').json, "chats"), /sign-in/);
+assert.match(parseLarkOut("ssh: connect to host failed").error, /ssh:/);
 assert.deepEqual(larkChatRows({ data: { items: [{ chat_id: "oc_1", name: "Agents Room", chat_mode: "group" }] } }),
   [{ id: "oc_1", name: "Agents Room", mode: "group", description: "" }]);
 const msg = larkMessageRows({ data: { items: [

@@ -193,17 +193,25 @@ export function skill(config, { name } = {}) {
 export const larkConfigured = (config) => Boolean(config.lark?.host);
 const shq = (word) => `'${String(word).replace(/'/g, `'\\''`)}'`;
 
+/** The JSON object in a CLI answer, past any notice line; a plain error text otherwise. */
+export function parseLarkOut(text) {
+  const s = String(text ?? "");
+  const start = s.indexOf("{"), end = s.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    try { return { json: JSON.parse(s.slice(start, end + 1)) }; } catch {}
+  }
+  return { error: s.slice(0, 400) };
+}
+
 function larkRun(config, words, timeout = 20_000) {
   const host = config.lark.host;
   const command = words.map(shq).join(" ");
   return new Promise((resolve) => execFile("ssh", ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
     "-o", "ConnectTimeout=8", host, command], { timeout, maxBuffer: 4 << 20 }, (error, stdout, stderr) => {
-    if (error && !stdout) return resolve({ error: String(stderr || error.message).slice(0, 400) });
-    // The CLI can print a notice line before the JSON; take the object, not the whole output.
-    const text = String(stdout ?? "");
-    const start = text.indexOf("{"), end = text.lastIndexOf("}");
-    try { resolve({ json: JSON.parse(start >= 0 ? text.slice(start, end + 1) : text) }); }
-    catch { resolve({ error: String(text || stderr).slice(0, 400) }); }
+    // The CLI can print a notice before the JSON, and its auth errors go to stderr with a non-zero
+    // exit: parse whichever stream carries the object, so "sign in again" reaches the model as text.
+    const out = String(stdout ?? ""), err = String(stderr ?? "");
+    resolve(out.trim() ? parseLarkOut(out) : parseLarkOut(err || error?.message || "no answer"));
   }));
 }
 
