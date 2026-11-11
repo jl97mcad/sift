@@ -318,14 +318,14 @@ async def bot(runner_args: RunnerArguments):
         retry_on_timeout=True,
         http_client=provider_http,
     )
-    # 24 kHz is what OpenAI-compatible TTS returns (and what the service asks for); 44.1 kHz only
-    # gave a sample-rate warning and an extra resample.
+    # OpenRouter's fish-audio PCM comes back at 44.1 kHz, not OpenAI's 24 kHz. The service's warning
+    # about 24 kHz is cosmetic; telling it 24 kHz makes the voice come out wrong (pitch and pace).
     tts = OpenAITTSService(
         api_key=api_key,
         base_url=OR,
         model=os.environ.get("SIFT_TTS", "fish-audio/drama-3"),
         voice=os.environ.get("SIFT_TTS_VOICE", "alloy"),
-        sample_rate=int(os.environ.get("SIFT_TTS_RATE", "24000")),
+        sample_rate=int(os.environ.get("SIFT_TTS_RATE", "44100")),
         http_client=provider_http,
     )
 
