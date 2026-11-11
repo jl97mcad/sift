@@ -63,6 +63,8 @@ assert not b.due(now=6.0, speaking=True)  # never while the person is talking
 b.touch(now=7)  # they stopped speaking again: a fresh window
 assert not b.due(now=10.9) and b.due(now=11)
 assert b.text == "Move the board meeting to Friday afternoon"
+# A send that fails must not lose the words: peek reads the message and keeps the batch intact.
+assert b.peek() == "Move the board meeting to Friday afternoon" and b.pending and b.due(now=11)
 assert b.take() == "Move the board meeting to Friday afternoon" and not b.pending
 b.add("Hold the invoice", now=20, via="note")
 assert b.via == "note"

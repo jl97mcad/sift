@@ -11,7 +11,7 @@ export const recalling = (config) => Boolean(config.memory?.dir || config.memory
 const HISTORY = 30; // ponytail: messages kept in memory; one conversation per server, lost on restart
 // Tools whose result must be spoken in a second round; the others are fire-and-forget.
 const CHIEF_TOOL_NAMES = new Set(["set_mode", "note_to_chief"]);
-const SPEAK_RESULT = new Set(["job_status", "needs_queue", "sessions", "read_session", "read_source", "paseo", "skill", "catch_up", "answer_ask", "recall", "plan", "plan_search", "github", "vault", "server_status", "web"]);
+const SPEAK_RESULT = new Set(["job_status", "needs_queue", "sessions", "read_session", "read_source", "paseo", "lark", "skill", "catch_up", "answer_ask", "recall", "plan", "plan_search", "github", "vault", "server_status", "web"]);
 
 /** The people's workers, from config: `workers`, or the older single `worker`. */
 export function workersOf(config) {
@@ -46,6 +46,12 @@ export function toolsFor(config) {
     { type: "function", function: { name: "read_session", description: "Read the latest prompts and replies of one session, by its seat (control, god, voice) or words from its title (a plan number, a name). Fast.", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } } },
     ...((config.sources ?? []).length ? [{ type: "function", function: { name: "read_source", description: `Read a source directly. ${(config.sources ?? []).map((s) => `${s.name}: ${s.use}`).join(". ")}`, parameters: { type: "object", properties: { name: { type: "string", enum: config.sources.map((s) => s.name) } }, required: ["name"] } } }] : []),
     ...(hosts.length ? [{ type: "function", function: { name: "paseo", description: "Run one Paseo CLI command on a host, as you'd type it after `paseo`: ls, inspect <id>, logs <id> --tail 15, status, wait <id>, schedule ls|inspect|logs, permit ls, terminal ls, provider ls; send <id> \"message\" to message a session; stop <id>, permit allow|deny <agent> [req], schedule pause|resume|run-once <id> need confirmed true after the person says yes. Load the paseo skill first if unsure.", parameters: { type: "object", properties: { command: { type: "string", description: "e.g. ls, or logs 7bf90aff --tail 15" }, host: { type: "string", enum: hosts }, confirmed: { type: "boolean", description: "Only for stop, permit allow/deny and schedule changes, after a clear yes." } }, required: ["command"] } } }] : []),
+    ...(config.lark?.host ? [{ type: "function", function: { name: "lark", description: "Read Lark as the person: recent chats, chats by name, or one chat's latest messages. Read-only, and it never sends. To send anything, hand it to Control.", parameters: { type: "object", properties: {
+      what: { type: "string", enum: ["chats", "search", "messages"], description: "chats: recent unmuted chats. search: chats whose name matches query. messages: the latest messages in chat." },
+      query: { type: "string", description: "For search: words from the chat name." },
+      chat: { type: "string", description: "For messages: the chat's name or its id (oc_...)." },
+      limit: { type: "integer", description: "Rows to return, 1 to 30." },
+    }, required: ["what"] } } }] : []),
     ...(known.length ? [{ type: "function", function: { name: "skill", description: `Load a how-to before doing a matching request. ${known.map((k) => `${k.name}: ${k.description}`).join(". ")}`, parameters: { type: "object", properties: { name: { type: "string", enum: known.map((k) => k.name) } }, required: ["name"] } } }] : []),
     { type: "function", function: { name: "job_status", description: "What the workers are doing now and what they've finished, with their replies.", parameters: { type: "object", properties: {} } } },
     { type: "function", function: { name: "needs_queue", description: "The open questions waiting for the person's answer, newest first.", parameters: { type: "object", properties: {} } } },
@@ -146,7 +152,12 @@ export async function respond(config, history, userText, handlers, onText, { too
       let args = {};
       try { args = JSON.parse(call.function.arguments || "{}"); } catch {}
       const handler = handlers[call.function.name];
-      try { return handler ? await handler(args) : "Unknown tool."; } catch (error) { return `That didn't work: ${error.message ?? error}`; }
+      try {
+        const out = handler ? await handler(args) : "Unknown tool.";
+        const text = String(out ?? "");
+        // A long read must not crowd the context (cost, latency, provider 400s on a long call).
+        return text.length > 8000 ? `${text.slice(0, 8000)}…` : text;
+      } catch (error) { return `That didn't work: ${error.message ?? error}`; }
     }));
     calls.forEach((call, i) => history.push({ role: "tool", tool_call_id: call.id, content: String(results[i]) }));
     const names = calls.map((call) => call.function.name);

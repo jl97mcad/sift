@@ -21,12 +21,18 @@ import uuid
 from datetime import datetime, timezone
 
 import aiohttp
+import httpx
 import numpy as np
 from loguru import logger
+from openai import DefaultAsyncHttpxClient
 
 from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
 from pipecat.adapters.llm.schemas.tools_schema import ToolsSchema
+from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
+from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import TurnAnalyzerUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
@@ -121,19 +127,27 @@ def schemas(tools: list[dict]) -> ToolsSchema:
 class Busy(BaseObserver):
     """Who is talking or thinking, so news waits for a quiet moment instead of talking over anyone."""
 
-    def __init__(self, turn=None, batch=None):
+    def __init__(self, turn=None, batch=None, stale_after: float = 12.0):
         super().__init__()
         self.user = self.bot = self.llm = False
         self.turn = turn
         self.batch = batch  # a chief message's grace window starts again whenever they stop speaking
         self.turn_end = 0.0  # when the last turn of theirs ended (monotonic)
+        self.last = 0.0  # last frame that should have cleared a flag; a stall must not silence news
+        self.stale_after = stale_after
 
     @property
     def quiet(self) -> bool:
-        return not (self.user or self.bot or self.llm)
+        # A TTS or LLM error can eat the matching end frame, leaving a flag set for the rest of the
+        # call and muting every news item. Flags older than stale_after count as cleared.
+        stale = self.last and time.monotonic() - self.last > self.stale_after
+        return stale or not (self.user or self.bot or self.llm)
 
     async def on_push_frame(self, data: FramePushed):
         frame = data.frame
+        if isinstance(frame, (BotStartedSpeakingFrame, BotStoppedSpeakingFrame, LLMFullResponseStartFrame,
+                              LLMFullResponseEndFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame)):
+            self.last = time.monotonic()
         if isinstance(frame, UserStartedSpeakingFrame):
             self.user = True
             if self.turn:
@@ -276,28 +290,54 @@ async def bot(runner_args: RunnerArguments):
         webrtc_connection=runner_args.webrtc_connection,
         params=TransportParams(audio_in_enabled=True, audio_out_enabled=True),
     )
-    stt = OpenAISTTService(api_key=api_key, base_url=OR, model=os.environ.get("SIFT_STT", "qwen/qwen3-asr-0.6b"))
+    # Every provider call is bounded: the SDK defaults are 600 s with two retries, which leaves a call
+    # deaf for half an hour when OpenRouter stalls. One shared client, 20 s total and 5 s to connect.
+    timeout = httpx.Timeout(float(os.environ.get("SIFT_PROVIDER_TIMEOUT", "20")), connect=5.0)
+    provider_http = DefaultAsyncHttpxClient(timeout=timeout)
+    model = os.environ.get("SIFT_LLM", "deepseek/deepseek-v4.1-flash")
+    fallback = os.environ.get("SIFT_LLM_FALLBACK", "deepseek/deepseek-v4-flash")
+    stt = OpenAISTTService(api_key=api_key, base_url=OR, model=os.environ.get("SIFT_STT", "qwen/qwen3-asr-0.6b"),
+                           http_client=provider_http)
     llm = OpenAILLMService(
         api_key=api_key,
         base_url=OR,
         settings=OpenAILLMService.Settings(
-            model=os.environ.get("SIFT_LLM", "deepseek/deepseek-v4.1-flash"),
+            model=model,
             max_tokens=800,
             # No hidden reasoning: it ate the budget after long lookups and left nothing to say.
-            extra={"extra_body": {"reasoning": {"enabled": False}}},
+            extra={"extra_body": {
+                "reasoning": {"enabled": False},
+                # A provider stall costs one turn, not the call: OpenRouter tries the next model in the
+                # list, and asks for the fastest provider it has.
+                "models": [model] + ([fallback] if fallback and fallback != model else []),
+                "provider": {"sort": "throughput"},
+            }},
         ),
+        # No first token within 3 s: re-issue once instead of leaving the person in silence.
+        retry_timeout_secs=float(os.environ.get("SIFT_LLM_RETRY_S", "3")),
+        retry_on_timeout=True,
+        http_client=provider_http,
     )
-    # OpenRouter's fish-audio PCM comes back at 44.1 kHz, not OpenAI's 24 kHz.
+    # 24 kHz is what OpenAI-compatible TTS returns (and what the service asks for); 44.1 kHz only
+    # gave a sample-rate warning and an extra resample.
     tts = OpenAITTSService(
         api_key=api_key,
         base_url=OR,
         model=os.environ.get("SIFT_TTS", "fish-audio/drama-3"),
         voice=os.environ.get("SIFT_TTS_VOICE", "alloy"),
-        sample_rate=int(os.environ.get("SIFT_TTS_RATE", "44100")),
+        sample_rate=int(os.environ.get("SIFT_TTS_RATE", "24000")),
+        http_client=provider_http,
     )
 
     context = LLMContext([{"role": "system", "content": setup["prompt"]}], tools=schemas(setup["tools"]))
-    pair = LLMContextAggregatorPair(context, user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()))
+    # Smart Turn's default "incomplete" fallback is 3 s: on finished sentences that read as unfinished
+    # it added about 2.8 s a turn (25 of 196 on 10-11 Nov). 0.8 s keeps the judgement, drops the wait.
+    turn_analyzer = LocalSmartTurnAnalyzerV3(params=SmartTurnParams(stop_secs=float(os.environ.get("SIFT_TURN_STOP_S", "0.8"))))
+    pair = LLMContextAggregatorPair(context, user_params=LLMUserAggregatorParams(
+        vad_analyzer=SileroVADAnalyzer(),
+        user_turn_stop_timeout=float(os.environ.get("SIFT_TURN_TIMEOUT_S", "1.5")),
+        user_turn_strategies=UserTurnStrategies(stop=[TurnAnalyzerUserTurnStopStrategy(turn_analyzer=turn_analyzer)]),
+    ))
     turn = Turn()
     chief = setup.get("chief")  # None unless the server's config has chief.worker
     mode = "sift"
@@ -350,6 +390,9 @@ async def bot(runner_args: RunnerArguments):
                 result = (await r.json()).get("result", "")
         except Exception as error:  # a failed tool is said, never silent
             result = f"That didn't work: {error}"
+        result = str(result)
+        if len(result) > 6000:  # a long read must not crowd the context (cost, latency, provider 400s)
+            result = result[:6000] + "…"
         logger.info(f"SIFT tool {name} {json.dumps(params.arguments)[:200]} -> {len(result)} chars")
         await params.result_callback(result)
 
@@ -459,7 +502,8 @@ async def bot(runner_args: RunnerArguments):
         else:
             await say("Nothing's waiting to send; the last one already went. Say it another way if it was for your chief of staff.")
 
-    async def send_chief(text: str, via: str):
+    async def send_chief(text: str, via: str) -> bool:
+        """Sends one message. True when the server took it; the caller only then drops it from the batch."""
         try:
             async with http.post(f"{TOOLS}/bot/chief/send", json={"text": text, "via": via, "call": call_id}) as r:
                 sent = await r.json()
@@ -469,18 +513,30 @@ async def bot(runner_args: RunnerArguments):
             context.add_message({"role": "assistant", "content": f"(Sent to chief of staff) {text}"})
             await show({"type": "chief", "state": "sent", "text": text, "dryRun": bool(sent.get("dryRun"))})
             logger.info(f"SIFT chief message sent ({len(text)} chars{', dry run' if sent.get('dryRun') else ''})")
-        else:
-            await show({"type": "chief", "state": "failed", "text": text})
-            await say(f"That didn't reach your chief of staff. {sent.get('result', '')}".strip())
-            logger.warning(f"SIFT chief send failed: {sent.get('result')}")
+            return True
+        await show({"type": "chief", "state": "failed", "text": text})
+        await say(f"That didn't reach your chief of staff. {sent.get('result', '')}".strip())
+        logger.warning(f"SIFT chief send failed: {sent.get('result')}")
+        return False
 
     async def chief_ticker():
         """Sends a waiting message once the person has been quiet for its whole window."""
+        failures = 0
         while True:
             await asyncio.sleep(0.25)
             if batch.due(speaking=busy.user or held(ear.voice_at, busy.turn_end, time.monotonic())):
                 via = batch.via
-                await send_chief(batch.take(), via)
+                text = batch.peek()
+                # Take only after the server has it: a failed send keeps their words and retries.
+                if await send_chief(text, via):
+                    batch.take()
+                    failures = 0
+                else:
+                    failures += 1
+                    if failures < 3:  # retry in 10 s; after three, keep the words for the hangup send
+                        batch.deadline = time.monotonic() + 10
+                    else:
+                        batch.deadline = None
 
     async def set_mode(params: FunctionCallParams):
         want = str((params.arguments or {}).get("mode", "")).lower()
@@ -548,34 +604,42 @@ async def bot(runner_args: RunnerArguments):
     async def speak_news():
         while True:
             event = await news.get()
-            while not busy.quiet:
-                await asyncio.sleep(0.4)
-            if event.get("type") == "chief_reply":
-                # The full reply goes in the context and on the page; the short version is spoken.
-                context.add_message({"role": "user", "content": f"(Not said by {person}. Their chief of staff replied: {(event.get('reply') or '(nothing)')[:2500]})"})
-                context.add_message({"role": "assistant", "content": event["line"]})
-                await show({"type": "chief", "state": "reply", "text": event.get("reply", ""), "line": event["line"]})
-                await say(event["line"])
-                logger.info(f"SIFT chief reply spoken ({len(event['line'])} chars)")
-                await asyncio.sleep(1)
-                continue
-            if mode == "chief":
-                # Other news would make the model talk: it waits until they're back with Sift. Progress is dropped.
-                if event.get("type") == "finished":
-                    deferred.append(event)
-                continue
-            if event.get("type") == "progress":
-                await task.queue_frames([TTSSpeakFrame(event["text"])])
-            elif event.get("type") == "finished":
-                # Kept in the context, so "what did it find?" is answered from the real reply.
-                note = (
-                    f"(Not said by {person}. {event['to']} finished \"{event['task']}\" ({event['status']}) and replied: "
-                    f"{event.get('reply') or '(nothing)'}) Tell {person} the result in one or two short spoken sentences, "
-                    "starting with what it was about. If it needs their decision, ask that one question last."
-                )
-                turn.reset()
-                await task.queue_frames([LLMMessagesAppendFrame(messages=[{"role": "user", "content": note}], run_llm=True)])
-                await asyncio.sleep(1)  # let the turn start before the next item checks for quiet
+            try:
+                await speak_event(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:  # one bad event must not kill the feed for the rest of the call
+                logger.error(f"SIFT news event failed: {error}")
+
+    async def speak_event(event: dict):
+        while not busy.quiet:
+            await asyncio.sleep(0.4)
+        if event.get("type") == "chief_reply":
+            # The full reply goes in the context and on the page; the short version is spoken.
+            context.add_message({"role": "user", "content": f"(Not said by {person}. Their chief of staff replied: {(event.get('reply') or '(nothing)')[:2500]})"})
+            context.add_message({"role": "assistant", "content": event["line"]})
+            await show({"type": "chief", "state": "reply", "text": event.get("reply", ""), "line": event["line"]})
+            await say(event["line"])
+            logger.info(f"SIFT chief reply spoken ({len(event['line'])} chars)")
+            await asyncio.sleep(1)
+            return
+        if mode == "chief":
+            # Other news would make the model talk: it waits until they're back with Sift. Progress is dropped.
+            if event.get("type") == "finished":
+                deferred.append(event)
+            return
+        if event.get("type") == "progress":
+            await task.queue_frames([TTSSpeakFrame(event["text"])])
+        elif event.get("type") == "finished":
+            # Kept in the context, so "what did it find?" is answered from the real reply.
+            note = (
+                f"(Not said by {person}. {event['to']} finished \"{event['task']}\" ({event['status']}) and replied: "
+                f"{event.get('reply') or '(nothing)'}) Tell {person} the result in one or two short spoken sentences, "
+                "starting with what it was about. If it needs their decision, ask that one question last."
+            )
+            turn.reset()
+            await task.queue_frames([LLMMessagesAppendFrame(messages=[{"role": "user", "content": note}], run_llm=True)])
+            await asyncio.sleep(1)  # let the turn start before the next item checks for quiet
 
     workers: list[asyncio.Task] = []
     started = datetime.now(timezone.utc)
@@ -584,16 +648,18 @@ async def bot(runner_args: RunnerArguments):
     preloaded = connected_once = False
 
     def add_preload(block: str):
-        """Puts the already-read block into the system message once, wherever the conversation is."""
+        """Adds the already-read block once, as its own message.
+
+        It used to be appended to the system message, which changed that message on every call and
+        so broke the provider's prompt cache for the largest part of the prompt. As a message, the
+        system prefix stays identical and the block is paid for once.
+        """
         nonlocal preloaded
         if not block or preloaded:
             return
         preloaded = True
-        messages = list(context.get_messages())
-        if messages and messages[0].get("role") == "system":
-            messages[0] = {"role": "system", "content": f"{messages[0]['content']}\n\n{block}"}
-            context.set_messages(messages)
-            logger.info(f"SIFT preload added, {len(block)} chars")
+        context.add_message({"role": "user", "content": f"(Already read for this call, not said by {person}:\n{block})"})
+        logger.info(f"SIFT preload added, {len(block)} chars")
 
     @transport.event_handler("on_client_connected")
     async def _connected(_t, _c):
@@ -601,17 +667,20 @@ async def bot(runner_args: RunnerArguments):
         if not connected_once:  # a reconnect keeps the call's first start time
             connected_once = True
             started = datetime.now(timezone.utc)
+            # One set of workers per call, not per connection: a reconnect used to start a second
+            # news feed and a second chief ticker, so delivery could double or race.
+            workers.extend([asyncio.create_task(follow()), asyncio.create_task(speak_news())])
+            if chief:
+                workers.append(asyncio.create_task(chief_ticker()))
         logger.info("SIFT call connected")
-        workers.extend([asyncio.create_task(follow()), asyncio.create_task(speak_news())])
-        if chief:
-            workers.append(asyncio.create_task(chief_ticker()))
-        # Wait a moment for the read-ahead so the first answer can use it; if it's slow, greet and add it when ready.
+        # Greet at once; the read-ahead lands in the system message when it's ready. Waiting for it
+        # (up to 2.5 s) delayed the first words of every call.
+        context.add_message({"role": "user", "content": f"(The call just connected. Greet {person} in a few words.)"})
+        await task.queue_frames([LLMRunFrame()])
         try:
             add_preload(await asyncio.wait_for(asyncio.shield(ahead), timeout=2.5))
         except asyncio.TimeoutError:
             ahead.add_done_callback(lambda t: add_preload(t.result()) if not t.cancelled() and not t.exception() else None)
-        context.add_message({"role": "user", "content": f"(The call just connected. Greet {person} in a few words.)"})
-        await task.queue_frames([LLMRunFrame()])
 
     def transcript() -> list[dict]:
         """The person's words and the assistant's, for the server's note of the call."""
@@ -626,7 +695,10 @@ async def bot(runner_args: RunnerArguments):
         logger.info("SIFT call ended")
         if batch.pending:  # they hung up inside the window without scrapping it: it goes
             via = batch.via
-            await send_chief(batch.take(), via)
+            if await send_chief(batch.peek(), via):
+                batch.take()
+            else:
+                logger.error(f"SIFT chief message not sent before hangup ({len(batch.peek())} chars)")
         try:
             body = {"started": started.isoformat(), "ended": datetime.now(timezone.utc).isoformat(), "call": call_id, "turns": transcript()}
             async with http.post(f"{TOOLS}/bot/call-ended", json=body, timeout=aiohttp.ClientTimeout(total=5)) as r:

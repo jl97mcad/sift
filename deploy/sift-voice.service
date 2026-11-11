@@ -1,0 +1,43 @@
+[Unit]
+Description=Sift voice front door (tailnet only): page, front model, tools
+After=network-online.target tailscaled.service wg-quick@wg-sift.service
+Wants=network-online.target tailscaled.service wg-quick@wg-sift.service
+
+[Service]
+Type=simple
+User=sift
+Group=sift
+WorkingDirectory=/opt/sift-voice/current/voice-web
+ExecStart=/usr/local/bin/node server.mjs
+Environment=PORT=8771
+Environment=DEVICE_LISTEN=10.66.0.1:8771
+Environment=OPENROUTER_KEY_FILE=/etc/sift-voice/openrouter-key
+Environment=SIFT_CONFIG=/opt/sift-voice/shared/config.json
+Environment=SIFT_STATE=/opt/sift-voice/shared/state
+Environment=HOME=/var/lib/sift
+Environment=PYTHONDONTWRITEBYTECODE=1
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+# The call's audio path is a single thread: keep it ahead of other jobs on a shared VPS
+# (10 Nov: load 7-10, hypervisor steal 19-47% made speech choppy).
+Nice=-10
+CPUWeight=800
+IOWeight=500
+# Least privilege: the service runs as its own user, reads what it needs, writes only its state.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/opt/sift-voice/shared /var/lib/sift
+ReadOnlyPaths=/etc/sift-voice /home/paseo/.config/jons-control
+
+[Install]
+WantedBy=multi-user.target

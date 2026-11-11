@@ -38,6 +38,20 @@ assert.ok(plan(cfg, { command: "schedule delete x", confirmed: true }).refused);
 assert.ok(plan(cfg, { command: "stop abc" }).refused); // no yes yet
 assert.ok(plan(cfg, { command: "stop --all", confirmed: true }).refused);
 assert.deepEqual(plan(cfg, { command: "stop abc", confirmed: true }).args.slice(3), ["stop", "abc"]);
+
+// Lark reads: invented JSON, no CLI and no network. The tool only ever lists, searches and reads.
+import { lark, larkChatRows, larkMessageRows, larkText } from "./tools.mjs";
+assert.equal(await lark({}, {}), "Lark isn't set up on this host.");
+assert.deepEqual(larkChatRows({ data: { items: [{ chat_id: "oc_1", name: "Agents Room", chat_mode: "group" }] } }),
+  [{ id: "oc_1", name: "Agents Room", mode: "group", description: "" }]);
+const msg = larkMessageRows({ data: { items: [
+  { create_time: 1794400000000, sender: { name: "Jon" }, body: { content: "{\"text\":\"hello\"}" }, msg_type: "text" },
+  { create_time: 1794400006000, sender: { id: "ou_x" }, body: { content: "{}" }, msg_type: "image" },
+] } });
+assert.equal(msg[0].text, "hello");
+assert.equal(msg[1].text, "[image]");
+assert.match(larkText({ ok: false, error: { message: "need_user_authorization", subtype: "token_missing" } }, "chats"), /sign-in/);
+assert.match(larkText({ data: { items: [{ chat_id: "oc_1", name: "A" }] } }, "chats"), /oc_1 \| A/);
 assert.ok(plan(cfg, { command: "ls --host evil:1" }).refused);
 assert.ok(plan(cfg, { command: "ls", host: "nope" }).refused);
 assert.ok(skills({}).some((s) => s.name === "paseo" && s.description));

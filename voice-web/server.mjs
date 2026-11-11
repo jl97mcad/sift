@@ -3,16 +3,17 @@
 // Listens on 127.0.0.1 only; `tailscale serve` puts it on the tailnet over HTTPS.
 // Person-specific settings live in config.json (see config.example.json), so anyone can run one.
 import { createServer } from "node:http";
-import { appendFile, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename } from "node:fs/promises";
 import { execFile } from "node:child_process";
+import { connect as netConnect } from "node:net";
 import { createPaseoApi } from "@getpaseo/client";
 import { createHostClient } from "@getpaseo/client/node";
 import { writeFile, chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { isPhantom, looksUnfinished, pieces, plain, progressLine, settledLength, speakPiece, stepLabel, transcribe } from "./speech.mjs";
+import { dirname, join } from "node:path";
+import { isPhantom, key, looksUnfinished, pieces, plain, progressLine, settledLength, speakPiece, stepLabel, transcribe } from "./speech.mjs";
 import { respond, summarise, systemPrompt, toolsFor, workersOf } from "./front.mjs";
-import { paseo, skill } from "./tools.mjs";
+import { lark, paseo, skill } from "./tools.mjs";
 import { contextBlock, digestSession, digestSessions } from "./digest.mjs";
 import { answerAsk, answering } from "./asks.mjs";
 import { look, reading, READ_HANDLERS } from "./reader.mjs";
@@ -22,9 +23,15 @@ import { chiefDryRun, chiefLabel, chiefOn, chiefWorker, notTheirWords, replyAfte
 const PORT = Number(process.env.PORT ?? 8771);
 // The Pipecat bot (pipecat/bot.py): the page's WebRTC offer goes to it; it calls the tools on BOT_PORT.
 const PIPECAT = process.env.PIPECAT_URL ?? "http://127.0.0.1:8774";
+const PIPECAT_ADDR = new URL(PIPECAT); // /healthz opens a socket here: a live engine, not just a config
 const BOT_PORT = Number(process.env.BOT_PORT ?? 8773); // 127.0.0.1 only and never served on the tailnet
 const MAX_AUDIO = 20 * 1024 * 1024;
-const config = JSON.parse(await readFile(new URL("./config.json", import.meta.url), "utf8").catch(() =>
+// The config and the state live outside the release, so a deploy never overwrites either:
+// SIFT_CONFIG (default ./config.json) and SIFT_STATE (default ./state).
+const CONFIG = process.env.SIFT_CONFIG || new URL("./config.json", import.meta.url).pathname;
+const STATE = process.env.SIFT_STATE || new URL("./state", import.meta.url).pathname;
+const VERSION = process.env.SIFT_VERSION || (await readFile(new URL("./VERSION", import.meta.url), "utf8").catch(() => "")).trim() || "dev";
+const config = JSON.parse(await readFile(CONFIG, "utf8").catch(() =>
   readFile(new URL("./config.example.json", import.meta.url), "utf8")));
 const page = await readFile(new URL("./index.html", import.meta.url));
 const LOCAL = "tcp://127.0.0.1:6767";
@@ -88,10 +95,19 @@ async function runCommand(worker, prompt) {
 }
 
 const history = [];
-const jobs = [];
+// Jobs live on disk: a restart, a deploy or a closed page must not lose a result that was never heard.
+await mkdir(STATE, { recursive: true }).catch(() => {});
+const jobsFile = join(STATE, "jobs.json");
+const jobs = await readFile(jobsFile, "utf8").then((text) => {
+  const rows = JSON.parse(text);
+  return Array.isArray(rows) ? rows.filter((row) => row && row.id).slice(-20) : [];
+}).catch(() => []);
 const readers = reading(config) ? READ_HANDLERS(config) : {}; // read-only; the same ones the background look uses
 const listeners = new Set();
 let conversation = Promise.resolve(); // one turn or job summary at a time touches the history
+let lastTurnAt = null; // for /healthz: a service with no turns for a day is telling you something
+let inflight = 0; // turns streaming now; the shutdown waits for them
+let draining = false; // SIGTERM seen: no new turns, finish the ones open
 const queues = new Map(); // each worker session takes one task at a time
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const serial = (fn) => (conversation = conversation.then(fn, fn));
@@ -115,12 +131,41 @@ function broadcast(event) {
   for (const listener of listeners) {
     try { listener.write(line); } catch { listeners.delete(listener); }
   }
+  if (event.type === "job") saveJobs();
 }
+
+/** The disk-safe part of a job: no worker object, no relay address, no prompt text. */
+const stored = (job) => ({
+  id: job.id, task: job.task, to: job.to, status: job.status, steps: job.steps.slice(-6),
+  reply: job.reply, started: job.started, finished: job.finished ?? null,
+  delivered: job.delivered === true, chief: job.chief === true,
+});
+let saving = null;
+/** Writes jobs.json after a short quiet spell, atomically: a crash mid-write can't truncate the list. */
+function saveJobs() {
+  if (saving) return saving;
+  saving = sleep(250).then(async () => {
+    saving = null;
+    const tmp = `${jobsFile}.tmp`;
+    try {
+      await writeFile(tmp, JSON.stringify(jobs.map(stored)));
+      await rename(tmp, jobsFile);
+    } catch (error) { console.error(`jobs: could not save: ${error.message}`); }
+  });
+  return saving;
+}
+
+/** Results that finished but were never spoken or shown: replayed to the next client that connects. */
+const unheard = () => jobs.filter((job) => !job.delivered && (job.status === "done" || job.status === "failed"));
 
 /** Speech for some text, one clip per piece, in order. */
 async function voice(text) {
-  const clips = await Promise.all(pieces(plain(text)).map((piece) => speakPiece(piece).catch(() => null)));
-  return clips.filter(Boolean);
+  const wanted = pieces(plain(text));
+  const clips = await Promise.all(wanted.map((piece) => speakPiece(piece).catch(() => null)));
+  const got = clips.filter(Boolean);
+  // The text still goes to the page; a speech failure must at least be visible in the journal.
+  if (got.length < wanted.length) console.error(`speech: ${wanted.length - got.length} of ${wanted.length} clips failed`);
+  return got;
 }
 
 /** A worker's live session, looked up fresh each time: by seat label, or for a plan lead by plan number. */
@@ -425,11 +470,18 @@ async function offer(request, response) {
 /** Speaks a finished job's result: a short summary, or an honest one-line fallback. */
 async function announce(job) {
   if (job.chief) return announceChief(job);
+  job.finished ??= Date.now();
   // An open call speaks it in its own words and keeps the answer for follow-ups.
-  if (bots.size) return toBots({ type: "finished", to: job.to, task: job.task, status: job.status, reply: job.reply.slice(0, 3000) });
+  if (bots.size) {
+    job.delivered = true;
+    saveJobs();
+    return toBots({ type: "finished", to: job.to, task: job.task, status: job.status, reply: job.reply.slice(0, 3000) });
+  }
   await serial(async () => {
     const text = (await summarise(config, history, job).catch(() => "")) || fallbackLine(job);
-    broadcast({ type: "say", text, audio: await voice(text) });
+    const audio = await voice(text);
+    broadcast({ type: "say", text, audio });
+    if (listeners.size) { job.delivered = true; saveJobs(); } // heard by someone: not replayed later
   });
 }
 
@@ -481,8 +533,15 @@ async function announceChief(job) {
   else if (!job.reply.trim()) line = "Your chief of staff finished without a reply.";
   else line = replyLine(await spokenSummary(config, job.reply));
   console.log(`chief reply ${job.id} spoken as ${line.length} chars`);
-  if (bots.size) return toBots({ type: "chief_reply", id: job.id, line, reply: job.reply.slice(0, 4000), status: job.status });
-  broadcast({ type: "say", text: line, audio: await voice(line) });
+  job.finished ??= Date.now();
+  if (bots.size) {
+    job.delivered = true;
+    saveJobs();
+    return toBots({ type: "chief_reply", id: job.id, line, reply: job.reply.slice(0, 4000), status: job.status });
+  }
+  const audio = await voice(line);
+  broadcast({ type: "say", text: line, audio });
+  if (listeners.size) { job.delivered = true; saveJobs(); }
 }
 
 /** A short honest line when a summary couldn't be made. */
@@ -495,6 +554,12 @@ function fallbackLine(job) {
 
 /** One spoken turn, streamed back as lines of JSON: what was heard, the reply text and its speech. */
 async function turn(request, response, typed) {
+  if (draining) {
+    response.writeHead(503, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" });
+    return response.end(JSON.stringify({ type: "error", message: "The voice service is restarting. Try again in a few seconds." }) + "\n");
+  }
+  inflight += 1;
+  lastTurnAt = new Date().toISOString();
   const audio = typed ? null : await body(request);
   response.writeHead(200, { "Content-Type": "application/x-ndjson", "Cache-Control": "no-store" });
   let open = true;
@@ -537,7 +602,7 @@ async function turn(request, response, typed) {
           const lines = calls.map(({ to, tool }) => tool === "look_into" ? "Let me dig into that" : workers.find((w) => w.name === to)?.handoff ?? `I'll ask ${to ?? "the team"}`);
           return `${[...new Set(lines)].join(", and ")}. I'll come back to you when I hear.`;
         },
-        paseo: (args) => paseo(config, args, open), skill: (args) => skill(config, args),
+        paseo: (args) => paseo(config, args, open), skill: (args) => skill(config, args), lark: (args) => lark(config, args),
         catch_up: catchUp, answer_ask: (args) => {
           const said = history.filter((m) => m.role === "user" && !String(m.content).startsWith("(")).map((m) => String(m.content));
           return answerAskTool({ ...args, _heard: said.slice(-3).join(" "), _last: said.at(-1) ?? "", _turn: said.length, _call: "text" });
@@ -559,6 +624,7 @@ async function turn(request, response, typed) {
   } finally {
     emit({ type: "done" });
     response.end();
+    inflight -= 1;
   }
 }
 
@@ -593,12 +659,45 @@ const page_server = createServer(async (request, response) => {
       // The phone's timezone, so spoken times are right when config.json doesn't set one.
       const zone = new URL(request.url, "http://x").searchParams.get("tz");
       if (!config.timezone && zone && Intl.supportedValuesOf("timeZone").includes(zone)) config.phoneTimezone = zone;
-      return send(response, 200, { title: title(), person: config.person, jobs: jobs.map(view) });
+      return send(response, 200, { title: title(), person: config.person, version: VERSION, jobs: jobs.map(view), unheard: unheard().map(view) });
+    }
+    // What a monitor needs: the service alive, the key readable, the call engine reachable, turns flowing.
+    if (request.method === "GET" && request.url === "/healthz") {
+      const [keyOk, pipecatOk] = await Promise.all([
+        key().then(() => true).catch(() => false),
+        new Promise((done) => {
+          const socket = netConnect(PIPECAT_ADDR.hostname, Number(PIPECAT_ADDR.port || 80), { timeout: 400 });
+          socket.once("connect", () => { socket.destroy(); done(true); });
+          socket.once("error", () => done(false));
+          socket.once("timeout", () => { socket.destroy(); done(false); });
+        }),
+      ]);
+      const ok = keyOk && pipecatOk && !draining;
+      return send(response, ok ? 200 : 503, {
+        ok, version: VERSION, uptime_s: Math.round(process.uptime()), draining,
+        key: keyOk, pipecat: pipecatOk, paseo_connections: clients.size,
+        last_turn: lastTurnAt, unheard: unheard().length, jobs: jobs.length, inflight,
+      });
+    }
+    if (request.method === "POST" && request.url === "/api/jobs/seen") {
+      let ids = [];
+      try { ids = JSON.parse((await body(request)).toString() || "{}").ids ?? []; } catch {}
+      for (const job of jobs) if (ids.includes(job.id)) job.delivered = true;
+      saveJobs();
+      return send(response, 200, { ok: true, marked: ids.length });
     }
     if (request.method === "GET" && request.url === "/api/events") {
       response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
       response.write(": hello\n\n");
       listeners.add(response);
+      // Results finished while nothing was open are said once, here, instead of being lost.
+      const pending = unheard();
+      for (const job of pending) {
+        const text = `${job.to} finished${job.status === "failed" ? " with a problem" : ""}: ${String(job.reply || "").slice(0, 300)}`;
+        response.write(`data: ${JSON.stringify({ type: "say", text, unheard: true, job: view(job) })}\n\n`);
+        job.delivered = true;
+      }
+      if (pending.length) saveJobs();
       const ping = setInterval(() => response.write(": ping\n\n"), 25_000);
       request.on("close", () => { clearInterval(ping); listeners.delete(response); });
       return;
@@ -612,9 +711,10 @@ const page_server = createServer(async (request, response) => {
       return await turn(request, response, text.trim().slice(0, 2000));
     }
     if (request.method === "POST" && request.url === "/api/metric") {
-      // Time to first audio, measured on the phone. One line per turn in metrics.log.
+      // Time to first audio, measured on the phone. One line per turn, in the state dir (the
+      // release is read-only, and a deploy must not take the history with it).
       const { ms } = JSON.parse((await body(request)).toString() || "{}");
-      if (Number.isFinite(ms)) await appendFile(new URL("./metrics.log", import.meta.url), `${new Date().toISOString()} ttfa_ms=${Math.round(ms)}\n`);
+      if (Number.isFinite(ms)) await appendFile(join(STATE, "metrics.log"), `${new Date().toISOString()} ttfa_ms=${Math.round(ms)}\n`);
       return send(response, 204, "", "text/plain");
     }
     send(response, 404, { error: "Not found" });
@@ -637,9 +737,9 @@ const botTools = {
   ...readers, look_into: (args) => lookInto(args, args?.question ?? ""),
   sessions, read_session: readSession, read_source: readSource, needs_queue: needsQueue, job_status: jobStatus,
   delegate: (args) => delegate(args, args?.task ?? ""), paseo: (args) => paseo(config, args, open), skill: (args) => skill(config, args),
-  catch_up: catchUp, answer_ask: answerAskTool, recall: (args) => recall(config, args),
+  catch_up: catchUp, answer_ask: answerAskTool, recall: (args) => recall(config, args), lark: (args) => lark(config, args),
 };
-createServer(async (request, response) => {
+const tool_server = createServer(async (request, response) => {
   try {
     if (request.method === "GET" && request.url === "/bot/setup") {
       // Earlier work this server has seen, so a new call can pick up "how's that going?".
@@ -686,7 +786,8 @@ createServer(async (request, response) => {
       let args = {};
       try { args = JSON.parse((await body(request)).toString() || "{}"); } catch {}
       const started = Date.now();
-      const result = String(await handler(args));
+      let result = String(await handler(args));
+      if (result.length > 6000) result = `${result.slice(0, 6000)}…`;
       const { _heard, _last, _turn, _call, ...shown } = args;
       console.log(`tool ${tool[1]} ${JSON.stringify(shown).slice(0, 200)} -> ${result.length} chars in ${Date.now() - started} ms`);
       return send(response, 200, { result });
@@ -712,3 +813,28 @@ if (process.env.DEVICE_LISTEN) {
   device.on("error", (error) => { console.error(`Device listener on ${host}:${port}: ${error.message}; retrying in 10 s`); setTimeout(listen, 10_000); });
   listen();
 }
+
+// ---- Shutdown: a deploy or a restart finishes the turns that are open instead of cutting them.
+let stopping = false;
+async function stop(signal) {
+  if (stopping) return;
+  stopping = true;
+  draining = true;
+  console.log(`${signal}: draining (turns ${inflight}, listeners ${listeners.size}, calls ${bots.size})`);
+  for (const listener of listeners) { try { listener.write(`data: ${JSON.stringify({ type: "bye" })}\n\n`); listener.end(); } catch {} }
+  for (const bot of bots) { try { bot.end(); } catch {} }
+  listeners.clear();
+  bots.clear();
+  const deadline = Date.now() + 8000;
+  while (inflight > 0 && Date.now() < deadline) await sleep(100);
+  if (inflight > 0) console.log(`${signal}: ${inflight} turn(s) still open after 8 s; exiting anyway`);
+  saveJobs();
+  page_server.close();
+  tool_server.close();
+  process.exit(0);
+}
+process.on("SIGTERM", () => stop("SIGTERM"));
+process.on("SIGINT", () => stop("SIGINT"));
+// A crash is a restart with state on disk (jobs.json), not a process that hangs half-alive.
+process.on("unhandledRejection", (error) => { console.error("unhandled rejection:", error); process.exit(1); });
+process.on("uncaughtException", (error) => { console.error("uncaught exception:", error); process.exit(1); });

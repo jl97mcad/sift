@@ -1,0 +1,38 @@
+[Unit]
+Description=Sift voice call engine (Pipecat, 127.0.0.1 only)
+After=network-online.target sift-voice.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sift
+Group=sift
+WorkingDirectory=/opt/sift-voice/current/voice-web/pipecat
+ExecStart=/opt/sift-voice/pipecat-venv/bin/python bot.py -t webrtc --host 127.0.0.1 --port 8774
+Environment=OPENROUTER_KEY_FILE=/etc/sift-voice/openrouter-key
+Environment=BOT_TOOLS=http://127.0.0.1:8773
+Environment=HOME=/var/lib/sift
+Environment=PYTHONDONTWRITEBYTECODE=1
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+# The call's audio runs on one thread; keep it ahead of other jobs when the shared VPS is busy.
+Nice=-10
+CPUWeight=800
+IOWeight=500
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/sift
+ReadOnlyPaths=/etc/sift-voice
+
+[Install]
+WantedBy=multi-user.target
