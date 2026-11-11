@@ -39,6 +39,10 @@
     },
     "default": "main"
   },
+  "lark": {
+    "host": "user@host-that-holds-jons-lark-user-token",
+    "bin": "lark-cli"
+  },
   "hearing": "Plan numbers are like ABC-123; \"ABC one two three\" is ABC-123.",
   "preload": false,
   "filler": false,

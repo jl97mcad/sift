@@ -177,6 +177,10 @@ class Batch:
     def text(self) -> str:
         return " ".join(self.parts)
 
+    def peek(self) -> str:
+        """The whole message, joined, without emptying the batch: a failed send keeps the words."""
+        return self.text
+
     def take(self) -> str:
         """The whole message, joined, and the batch emptied."""
         text = self.text

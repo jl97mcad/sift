@@ -186,3 +186,109 @@ export function skill(config, { name } = {}) {
   const found = all.find((s) => s.name === String(name ?? "").trim().toLowerCase());
   return found ? found.body : `No skill called "${name}". Skills: ${all.map((s) => s.name).join(", ") || "none"}.`;
 }
+
+// ---- Lark, read-only. The user token lives on the machine that is signed in as Jon, so the
+// command runs there over SSH; nothing here writes, sends or reacts. Sending is Control's job,
+// where the approval rail lives.
+export const larkConfigured = (config) => Boolean(config.lark?.host);
+const shq = (word) => `'${String(word).replace(/'/g, `'\\''`)}'`;
+
+/** The JSON object in a CLI answer, past any notice line; a plain error text otherwise. */
+export function parseLarkOut(text) {
+  const s = String(text ?? "");
+  const start = s.indexOf("{"), end = s.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    try { return { json: JSON.parse(s.slice(start, end + 1)) }; } catch {}
+  }
+  return { error: s.slice(0, 400) };
+}
+
+function larkRun(config, words, timeout = 20_000) {
+  const host = config.lark.host;
+  const command = words.map(shq).join(" ");
+  return new Promise((resolve) => execFile("ssh", ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new",
+    "-o", "ConnectTimeout=8", host, command], { timeout, maxBuffer: 4 << 20 }, (error, stdout, stderr) => {
+    // The CLI can print a notice before the JSON, and its auth errors go to stderr with a non-zero
+    // exit: parse whichever stream carries the object, so "sign in again" reaches the model as text.
+    const out = String(stdout ?? ""), err = String(stderr ?? "");
+    resolve(out.trim() ? parseLarkOut(out) : parseLarkOut(err || error?.message || "no answer"));
+  }));
+}
+
+/** Chat rows from a lark-cli chat list/search answer, whatever nesting the shortcut used. */
+export function larkChatRows(json) {
+  const items = json?.data?.items ?? json?.items ?? json?.data?.chats ?? [];
+  return (Array.isArray(items) ? items : []).map((item) => ({
+    id: item.chat_id ?? item.chatId ?? "",
+    name: item.name ?? item.title ?? "(unnamed)",
+    mode: item.chat_mode ?? item.chatMode ?? "",
+    description: item.description ?? "",
+  })).filter((row) => row.id);
+}
+
+/** Message rows with a readable time, speaker and text; non-text messages say what they were. */
+export function larkMessageRows(json) {
+  const items = json?.data?.items ?? json?.items ?? [];
+  return (Array.isArray(items) ? items : []).map((item) => {
+    const when = Number(item.create_time ?? item.createTime ?? 0);
+    const time = Number.isFinite(when) && when > 0 ? new Date(when).toISOString().slice(5, 16).replace("T", " ") : "";
+    let text = "";
+    if (typeof item.body?.content === "string") {
+      try { text = JSON.parse(item.body.content).text ?? ""; } catch { text = item.body.content; }
+    }
+    if (!text) text = item.text ?? "";
+    const sender = item.sender?.name ?? item.sender_name ?? item.sender?.id ?? item.sender?.sender_id?.open_id ?? "";
+    const kind = item.msg_type ?? item.msgType ?? "text";
+    return { time, sender, text: text || `[${kind}]`, kind };
+  }).filter((row) => row.text);
+}
+
+/** One screen of Lark, as a model should see it: a header line, then one line per row. */
+export function larkText(json, kind, name = "") {
+  if (json?.ok === false) {
+    const error = json?.error ?? {};
+    if (/token_missing|need_user_authorization/.test(JSON.stringify(error)))
+      return "Lark needs Jon's sign-in again: run `lark-cli auth login` on the machine that holds his user token, then ask me again.";
+    return `Lark said ${error.message ?? JSON.stringify(error).slice(0, 200)}.`;
+  }
+  if (kind === "messages") {
+    const rows = larkMessageRows(json);
+    return rows.length ? `${name || "Chat"}:\n${rows.map((r) => `${r.time} ${r.sender}: ${r.text}`).join("\n")}`
+      : `No messages came back${name ? ` from ${name}` : ""}.`;
+  }
+  const rows = larkChatRows(json);
+  return rows.length ? rows.map((r) => `${r.id} | ${r.name}${r.mode ? ` | ${r.mode}` : ""}${r.description ? ` | ${r.description}` : ""}`).join("\n")
+    : "No chats came back.";
+}
+
+/**
+ * `what`: chats (recent, unmuted), search (chats by name), messages (one chat, by name or id).
+ * Read-only by construction: only "+chat-list", "+chat-search" and "+chat-messages-list" are ever run.
+ */
+export async function lark(config, { what = "chats", query, chat, limit } = {}) {
+  if (!larkConfigured(config)) return "Lark isn't set up on this host.";
+  const n = Math.min(30, Math.max(1, Number(limit) || (what === "messages" ? 20 : 15)));
+  const bin = config.lark.bin ?? "lark-cli";
+  if (what === "search") {
+    const q = String(query ?? "").trim();
+    if (!q) return "Say what to search for in Lark chats.";
+    const { json, error } = await larkRun(config, [bin, "im", "+chat-search", "--query", q, "--as", "user", "--page-size", String(n), "--format", "json"]);
+    return error ?? larkText(json, "chats", `Chats matching "${q}"`);
+  }
+  if (what === "messages") {
+    let id = String(chat ?? "").trim();
+    if (!/^(oc|ou|on)_/.test(id)) {
+      const found = await larkRun(config, [bin, "im", "+chat-search", "--query", id, "--as", "user", "--page-size", "5", "--format", "json"]);
+      if (found.error) return found.error;
+      const first = larkChatRows(found.json)[0];
+      if (!first) return `No Lark chat matches "${id}".`;
+      chat = first.name;
+      id = first.id;
+    }
+    const { json, error } = await larkRun(config, [bin, "im", "+chat-messages-list", "--chat-id", id, "--as", "user",
+      "--page-size", String(n), "--no-reactions", "--format", "json"], 25_000);
+    return error ?? larkText(json, "messages", String(chat ?? id));
+  }
+  const { json, error } = await larkRun(config, [bin, "im", "+chat-list", "--as", "user", "--page-size", String(n), "--exclude-muted", "--format", "json"]);
+  return error ?? larkText(json, "chats", "Chats");
+}
