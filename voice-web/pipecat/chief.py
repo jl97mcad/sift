@@ -32,11 +32,13 @@ EXIT = [re.compile(p) for p in (
     rf"(?:bye|goodbye|cheers|thanks|thank you) {_CHIEF}",
 )]
 
-_SCRAP_VERB = r"(?:scrap|scrapped|s crap|crap|strap|scrub|scratch|cancel|delete|drop|bin|kill|ditch|forget|undo|strike|remove|lose|wipe|unsend)"
+# "Scrap" is heard as scrab, scrub, scrape, crap, crab...: any of them counts.
+_SCRAPISH = r"(?:s ?[ck]r[aeiu]+[bp]+(?:ed|e)?|[ck]r[au]+[bp]+(?:ed)?|strap|scratch)"
+_SCRAP_VERB = rf"(?:{_SCRAPISH}|cancel|delete|drop|bin|kill|ditch|forget|undo|strike|remove|lose|wipe|unsend)"
 _SCRAP_WHAT = r"(?:that|it|this|those|them|the (?:last )?(?:one|message|note|bit)|that (?:last )?(?:one|message|note|bit)|what i (?:just )?said|everything)"
 SCRAP = [re.compile(p) for p in (
     rf"{_SCRAP_VERB} {_SCRAP_WHAT}(?: (?:message|one|note|bit))?",
-    r"(?:scrap|scrapped|scrub|scratch|strap|s crap|unsend)",  # alone; "Cancel." alone may be an answer to the chief
+    rf"(?:{_SCRAPISH}|unsend)",  # alone; "Cancel." alone may be an answer to the chief
     rf"(?:don't|do not|dont|never) send (?:that|it|this|those|them|the (?:message|note)|that (?:message|note))(?: (?:message|one))?",
     rf"(?:don't|do not|dont) send",
     r"never ?mind(?: that)?",

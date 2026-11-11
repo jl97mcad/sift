@@ -39,6 +39,10 @@ assert split_tail("Tell him yes. Back to Sift.") == ("Tell him yes.", "exit")
 assert split_tail("Book it for Friday. Then tell Will.") == ("Book it for Friday. Then tell Will.", "")
 assert split_tail("Scrap that.") == ("Scrap that.", "")  # a whole-turn command is classify's job
 assert classify("Scrub that.") == "scrap"
+for heard in ["Scrab that.", "Scrape that.", "Scrapped that.", "Crap that.", "Crab that.", "Skrap that.", "Scrub it."]:  # how recognition hears it
+    assert classify(heard) == "scrap", heard
+for said in ["Ship that.", "Wrap that up for Friday.", "Grab that file for me."]:
+    assert classify(said) == "message", said
 assert split_tail("Cancel the offsite, scrap that.") == ("Cancel the offsite", "scrap")
 assert split_tail("Back to Sift, scrap that.") == ("Back to Sift", "scrap") and classify("Back to Sift") == "exit"
 assert split_tail("Book Rome, Paris and Lyon.") == ("Book Rome, Paris and Lyon.", "")
