@@ -5,6 +5,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { digestLogs } from "./digest.mjs";
+import { chiefOn } from "./chief.mjs";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 
@@ -166,7 +167,8 @@ let cache = null;
 
 /** Skills from the skills folder: name and description from each file's front matter, then the body. */
 export function skills(config) {
-  if (cache) return cache;
+  const offered = (all) => all.filter((s) => !s.needs || (s.needs === "chief" && chiefOn(config)));
+  if (cache) return offered(cache);
   const folder = config.skillsDir ? (isAbsolute(config.skillsDir) ? config.skillsDir : join(HERE, config.skillsDir)) : join(HERE, "skills");
   let files = [];
   try { files = readdirSync(folder).filter((f) => f.endsWith(".md")).sort(); } catch {}
@@ -174,9 +176,9 @@ export function skills(config) {
     const text = readFileSync(join(folder, file), "utf8");
     const match = text.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
     const meta = Object.fromEntries((match?.[1] ?? "").split("\n").map((l) => l.match(/^(\w+):\s*(.*)$/)).filter(Boolean).map((m) => [m[1], m[2].trim()]));
-    return { name: meta.name || file.replace(/\.md$/, ""), description: meta.description || "", body: (match?.[2] ?? text).trim() };
+    return { name: meta.name || file.replace(/\.md$/, ""), description: meta.description || "", needs: meta.needs || "", body: (match?.[2] ?? text).trim() };
   });
-  return cache;
+  return offered(cache); // a skill for a feature that's off here ("needs: chief") isn't offered
 }
 
 export function skill(config, { name } = {}) {

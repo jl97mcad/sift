@@ -256,3 +256,77 @@ for (const url of ["http://127.0.0.1:8771/", "http://100.65.211.56:8788/v1/healt
   assert.equal(typeof look, "function");
 }
 console.log("reader ok");
+
+// Chief-of-staff mode: off unless config.chief.worker is set; the message is the person's words, wrapped once.
+import { chiefDryRun, chiefOn, chiefWorker, firstWords, notTheirWords, replyAfter, replyLine, spokenSummary, wrap } from "./chief.mjs";
+import { systemPrompt } from "./front.mjs";
+import { execFileSync } from "node:child_process";
+{
+  const god = { name: "the god session", seat: "god", url: "tcp://127.0.0.1:1", use: "Priorities" };
+  const base = { person: "Jon", paseo: { hosts: {} }, workers: [{ name: "Control", seat: "control", use: "x" }, god, { name: "plan lead", lead: true, use: "y" }] };
+  const on = { ...base, chief: { worker: "the god session" } };
+  const names = (c) => toolsFor(c).map((t) => t.function.name);
+  assert.ok(!names(base).includes("set_mode") && !names(base).includes("note_to_chief"), "off by default (other installs unchanged)");
+  assert.ok(!systemPrompt(base).includes("set_mode") && !skills(base).some((s) => s.name === "chief-of-staff"));
+  assert.ok(names(on).includes("set_mode") && names(on).includes("note_to_chief"));
+  assert.ok(skills(on).some((s) => s.name === "chief-of-staff") && skill(on, { name: "chief-of-staff" }).includes("back to Sift"));
+  assert.ok(/set_mode/.test(systemPrompt(on)) && /signatures/.test(systemPrompt(on)) && /verbatim/.test(systemPrompt(on)));
+  assert.deepEqual(toolsFor(on).find((t) => t.function.name === "set_mode").function.parameters.properties.mode.enum, ["sift", "chief"]);
+  assert.equal(chiefOn(base), false);
+  assert.equal(chiefWorker(on, on.workers), god);
+  assert.equal(chiefWorker({ ...on, chief: { worker: "plan lead" } }, on.workers), null, "never a plan lead or a command");
+  assert.equal(chiefWorker({ ...on, chief: { worker: "nobody" } }, on.workers), null);
+  assert.ok(!names({ ...on, chief: { worker: "nobody" } }).includes("set_mode"), "not offered for a worker that isn't there");
+  assert.ok(!names({ ...on, chief: { worker: "plan lead" } }).includes("note_to_chief"));
+  assert.equal(chiefDryRun({ chief: { worker: "x", dryRun: true } }), true);
+  const saved = process.env.SIFT_CHIEF_DRY_RUN;
+  process.env.SIFT_CHIEF_DRY_RUN = "1"; assert.equal(chiefDryRun(on), true);
+  delete process.env.SIFT_CHIEF_DRY_RUN; assert.equal(chiefDryRun(on), false);
+  if (saved !== undefined) process.env.SIFT_CHIEF_DRY_RUN = saved;
+  // The exact wrapper, with the words untouched.
+  assert.equal(wrap("Jon", "  Move the board call to Friday, and hold the deck.  "), "Jon, by voice (Sift Voice, verbatim transcript; may contain mishearings): Move the board call to Friday, and hold the deck.");
+  // A quick note must be the words he said: a paraphrase is refused with what he said.
+  const heard = "Tell my chief of staff the Mattel call moved to Friday";
+  assert.equal(notTheirWords("the Mattel call moved to Friday", heard), "");
+  assert.equal(notTheirWords("The Mattel call moved to Friday.", heard), "");
+  assert.match(notTheirWords("Jon's Mattel meeting is now on Friday", heard), /^Not their words: they didn't say "jons mattel"|^Not their words/);
+  assert.match(notTheirWords("Mattel call moved to Friday, please confirm with the client", heard), /please confirm/);
+  assert.match(notTheirWords("", heard), /No words/);
+  assert.match(notTheirWords("Send it", ""), /no record of what they said/, "nothing heard: never accepted");
+  // The reply to one message: the assistant text after it, up to the next message, which gets its own.
+  const msg1 = wrap("Jon", "First"), msg2 = wrap("Jon", "Second");
+  const items = [
+    { type: "assistant_message", text: "Earlier work" },
+    { type: "user_message", text: msg1 }, { type: "tool_call", name: "Bash", detail: {} }, { type: "assistant_message", text: "On the first: done." },
+    { type: "user_message", text: msg2 }, { type: "assistant_message", text: "On the second: booked." },
+  ];
+  assert.deepEqual([replyAfter(items, msg1).reply, replyAfter(items, msg1).followed], ["On the first: done.", true]);
+  assert.deepEqual([replyAfter(items, msg2).reply, replyAfter(items, msg2).followed], ["On the second: booked.", false]);
+  assert.equal(replyAfter(items, wrap("Jon", "Third")), null);
+  // A message from another session in between doesn't cut the reply short.
+  const mixed = [{ type: "user_message", text: msg1 }, { type: "user_message", text: "<paseo-system>From Control: status?</paseo-system>" }, { type: "assistant_message", text: "Done, and Control's answered." }];
+  assert.deepEqual([replyAfter(mixed, msg1).reply, replyAfter(mixed, msg1).followed], ["Done, and Control's answered.", false]);
+  assert.equal(replyAfter(items, msg1, { bounded: false }).reply, "On the first: done.\n\nOn the second: booked.", "a delegated task still reads everything after it");
+  // The spoken version: the cheap model's short line, or the first words when it can't be made.
+  assert.equal(await spokenSummary(on, "Long reply about the board.", { complete: async (_c, messages) => { assert.ok(!messages.some((m) => m.tools)); return "  It's moved to Friday.  "; } }), "It's moved to Friday.");
+  assert.equal(await spokenSummary(on, "One two three", { complete: async () => { throw new Error("down"); } }), "One two three");
+  assert.equal(await spokenSummary(on, "   "), "");
+  assert.equal(replyLine("It's moved."), "Your chief of staff says: It's moved.");
+  assert.equal(firstWords("**Done.** See [the PR](https://x/y). " + "word ".repeat(40), 5), "Done. See the PR. word…");
+  // Memory: what went to the chief is marked, so the call's note says so.
+  const lines = transcriptText([
+    { role: "user", text: "Talk to my chief of staff." },
+    { role: "user", text: "(Sent to chief of staff) Move the board call to Friday." },
+    { role: "user", text: "(Scrapped, not sent to chief of staff) Cancel the offsite." },
+    { role: "user", text: "(Not said by Jon. Their chief of staff replied: Moved.)" },
+  ], "Jon").split("\n");
+  assert.deepEqual(lines, ["Jon: Talk to my chief of staff.", "Jon (sent to chief of staff): Move the board call to Friday.", "Jon (scrapped, not sent to chief of staff): Cancel the offsite.", "News: Their chief of staff replied: Moved.)"]);
+}
+// The bot's half (phrases and the grace window) is Python: pipecat/test_chief.py.
+try {
+  process.stdout.write(execFileSync("python3", ["test_chief.py"], { cwd: new URL("./pipecat/", import.meta.url), encoding: "utf8" }));
+} catch (error) {
+  if (error.code === "ENOENT") console.log("chief (python) skipped: no python3");
+  else throw error;
+}
+console.log("chief ok (js)");

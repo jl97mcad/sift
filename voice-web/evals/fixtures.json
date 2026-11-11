@@ -25,6 +25,7 @@
       { "name": "Control scratchpad", "use": "Control's live list of what's in flight and waiting on Jon", "command": "fixture" }
     ],
     "paseo": { "hosts": { "main-box": "127.0.0.1:1", "macbook": "127.0.0.1:2" }, "default": "main-box" },
+    "chief": { "worker": "the god session" },
     "hearing": "His plans are numbered like JON-9122: \"John 9122\" is JON-9122."
   },
   "asks": [

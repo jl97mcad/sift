@@ -5,6 +5,9 @@ server.mjs stays the one owner of the tools, the prompt and background jobs: thi
 setup from the local side door (BOT_TOOLS, 127.0.0.1 only), calls tools there, and speaks job news
 from its event feed into the open call.
 
+Chief-of-staff mode (when the server's config has chief.worker): the person's turns skip the model and
+go to their chief of staff word for word, after a short grace window; chief.py has the pure parts.
+
 Run: .venv/bin/python bot.py -t webrtc --host 127.0.0.1 --port 8774
 Models (env): SIFT_LLM, SIFT_STT, SIFT_TTS, SIFT_TTS_VOICE, SIFT_TTS_RATE; key from OPENROUTER_KEY_FILE.
 """
@@ -13,10 +16,12 @@ import asyncio
 import json
 import os
 import random
+import time
 import uuid
 from datetime import datetime, timezone
 
 import aiohttp
+import numpy as np
 from loguru import logger
 
 from pipecat.adapters.llm.schemas.function_schema import FunctionSchema
@@ -26,7 +31,9 @@ from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     FunctionCallResultProperties,
+    InputAudioRawFrame,
     LLMFullResponseEndFrame,
+    LLMContextFrame,
     LLMFullResponseStartFrame,
     LLMMessagesAppendFrame,
     LLMRunFrame,
@@ -54,6 +61,8 @@ from pipecat.services.openai.tts import OpenAITTSService
 from pipecat.transports.base_transport import TransportParams
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 
+from chief import Batch, classify, clean_heard, held, receipt, split_tail
+
 OR = "https://openrouter.ai/api/v1"
 TOOLS = os.environ.get("BOT_TOOLS", "http://127.0.0.1:8773")
 # What the page shows while a tool runs.
@@ -76,10 +85,13 @@ LABELS = {
     "server_status": "Checking the server",
     "web": "Checking the web",
     "look_into": "Looking into it",
+    "set_mode": "Switching mode",
+    "note_to_chief": "Noting it for your chief of staff",
 }
 # Said the moment a tool starts when nothing has been said yet this turn, so a lookup never starts in silence.
 FILLERS = ["Checking.", "One sec.", "Let me look.", "Just a moment.", "Looking now.", "Let me check."]
-NO_FILLER = {"skill", "stay_quiet", "end_conversation"}
+NO_FILLER = {"skill", "stay_quiet", "end_conversation", "set_mode", "note_to_chief"}
+LOCAL = {"stay_quiet", "end_conversation", "set_mode", "note_to_chief"}  # answered here, not by the server
 
 
 def key() -> str:
@@ -109,10 +121,12 @@ def schemas(tools: list[dict]) -> ToolsSchema:
 class Busy(BaseObserver):
     """Who is talking or thinking, so news waits for a quiet moment instead of talking over anyone."""
 
-    def __init__(self, turn=None):
+    def __init__(self, turn=None, batch=None):
         super().__init__()
         self.user = self.bot = self.llm = False
         self.turn = turn
+        self.batch = batch  # a chief message's grace window starts again whenever they stop speaking
+        self.turn_end = 0.0  # when the last turn of theirs ended (monotonic)
 
     @property
     def quiet(self) -> bool:
@@ -128,6 +142,9 @@ class Busy(BaseObserver):
             self.user = False
             if self.turn:
                 self.turn.reset()
+            self.turn_end = time.monotonic()
+            if self.batch:
+                self.batch.touch()
         elif isinstance(frame, BotStartedSpeakingFrame):
             self.bot = True
         elif isinstance(frame, BotStoppedSpeakingFrame):
@@ -163,6 +180,77 @@ class Turn(FrameProcessor):
         line = random.choice([f for f in FILLERS if f != self.last])
         self.last = line
         return line
+
+
+class Ear(FrameProcessor):
+    """First in the line: hears the person start talking before speech recognition and turn-taking catch
+    up (they run seconds behind the audio), so a waiting chief message never goes while they're still
+    saying "scrap that". Only listens while a message is waiting."""
+
+    THRESHOLD = 900.0  # RMS on the int16 scale: speech, not room noise
+    RUN = 0.25  # seconds of loud audio that count as speech, not a click
+
+    def __init__(self, armed):
+        super().__init__()
+        self.armed = armed  # () -> bool: a chief message is waiting
+        self.voice_at = 0.0
+        self._loud_since: float | None = None
+
+    async def process_frame(self, frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InputAudioRawFrame) and self.armed():
+            samples = np.frombuffer(frame.audio, dtype=np.int16).astype(np.float32)
+            now = time.monotonic()
+            if samples.size and float(np.sqrt(np.mean(samples * samples))) >= self.THRESHOLD:
+                self._loud_since = self._loud_since or now
+                if now - self._loud_since >= self.RUN:
+                    self.voice_at = now
+            else:
+                self._loud_since = None
+        await self.push_frame(frame, direction)
+
+
+class Gate(FrameProcessor):
+    """Between the person's turn and the model. Each turn's new words pass through `handle` first; when
+    it takes them (chief mode, or "scrap that" while a note waits), the model never runs for that turn.
+    In chief mode nothing reaches the model at all, so no answer of its own is ever spoken."""
+
+    def __init__(self, closed, handle):
+        super().__init__()
+        self.closed = closed  # () -> bool: chief mode is on
+        self.handle = handle  # async (list of (index, text)) -> bool: True when the turn was taken
+        self.seen = 0  # context messages already looked at
+
+    def forget(self, context: LLMContext, indexes: list[int]):
+        """Takes the person's raw words for chief-mode turns out of the context; notes of what was sent go in instead."""
+        if not indexes:
+            return
+        drop = set(indexes)
+        messages = [m for i, m in enumerate(context.get_messages()) if i not in drop]
+        context.set_messages(messages)
+        self.seen = len(messages)
+
+    async def process_frame(self, frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, LLMContextFrame) and direction == FrameDirection.DOWNSTREAM:
+            if getattr(frame, "speculation", False):  # a provisional copy, before the turn has ended
+                if self.closed():
+                    return
+                await self.push_frame(frame, direction)
+                return
+            messages = frame.context.get_messages()
+            if self.seen > len(messages):
+                self.seen = 0
+            new = [
+                (i, m["content"])
+                for i, m in enumerate(messages)
+                if i >= self.seen and m.get("role") == "user" and isinstance(m.get("content"), str) and not m["content"].startswith("(")
+            ]
+            self.seen = len(messages)
+            if await self.handle(new) or self.closed():
+                logger.info("SIFT chief mode: turn handled without the model")
+                return
+        await self.push_frame(frame, direction)
 
 
 async def bot(runner_args: RunnerArguments):
@@ -211,9 +299,18 @@ async def bot(runner_args: RunnerArguments):
     context = LLMContext([{"role": "system", "content": setup["prompt"]}], tools=schemas(setup["tools"]))
     pair = LLMContextAggregatorPair(context, user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()))
     turn = Turn()
-    pipeline = Pipeline([transport.input(), stt, pair.user(), llm, turn, tts, transport.output(), pair.assistant()])
+    chief = setup.get("chief")  # None unless the server's config has chief.worker
+    mode = "sift"
+    batch = Batch()
 
-    busy = Busy(turn)
+    async def chief_turn(new: list) -> bool:  # defined below; the gate needs it now
+        return await handle_chief_turn(new)
+
+    gate = Gate(lambda: mode == "chief", chief_turn)
+    ear = Ear(lambda: batch.pending)
+    pipeline = Pipeline([transport.input(), ear, stt, pair.user(), gate, llm, turn, tts, transport.output(), pair.assistant()])
+
+    busy = Busy(turn, batch)
     latency = UserBotLatencyObserver()
 
     @latency.event_handler("on_latency_measured")
@@ -258,7 +355,7 @@ async def bot(runner_args: RunnerArguments):
 
     for tool in setup["tools"]:
         name = tool["function"]["name"]
-        if name not in ("stay_quiet", "end_conversation"):
+        if name not in LOCAL:
             llm.register_function(name, remote, cancel_on_interruption=name not in ("delegate", "look_into"))
 
     async def stay_quiet(params: FunctionCallParams):
@@ -270,6 +367,160 @@ async def bot(runner_args: RunnerArguments):
 
     llm.register_function("stay_quiet", stay_quiet)
     llm.register_function("end_conversation", end_conversation)
+
+    # ---- Chief-of-staff mode: the person's words go to their chief of staff verbatim; the model stays out.
+    label = (chief or {}).get("label") or "Chief of staff"
+    deferred: list[dict] = []  # other news waits until they're back with Sift
+
+    async def say(text: str, frame_source=None):
+        """A fixed line, spoken without the model and kept out of the context."""
+        frame = TTSSpeakFrame(text, append_to_context=False)
+        if frame_source is not None:
+            await frame_source.push_frame(frame, FrameDirection.DOWNSTREAM)
+        else:
+            await task.queue_frames([frame])
+
+    async def enter(source=None):
+        nonlocal mode
+        mode = "chief"  # set_mode's own result tells the model; nothing is added mid-call
+        await show({"type": "mode", "mode": "chief", "label": label})
+        line = "You're through to your chief of staff. Say 'back to Sift' to return."
+        if chief and chief.get("dryRun"):
+            line += " This is a test: nothing is sent."
+        await say(line, source)
+        logger.info("SIFT chief mode on")
+
+    async def leave(source=None):
+        nonlocal mode
+        mode = "sift"
+        if source is None:  # left by saying so, not through set_mode: the model must know it's back
+            context.add_message({"role": "assistant", "content": f"(Chief-of-staff mode off: {person} is talking to me again. A note for the chief now needs note_to_chief; I never say I've passed something on unless note_to_chief took it.)"})
+        await show({"type": "mode", "mode": "sift", "label": ""})
+        waiting = f" {receipt(batch.text)}, unless you say scrap that." if batch.pending else ""
+        await say("Back to Sift." + waiting, source)
+        logger.info("SIFT chief mode off")
+        for event in deferred:
+            news.put_nowait(event)
+        deferred.clear()
+
+    async def handle_chief_turn(new: list) -> bool:
+        """The person's new words this turn, before the model. True when they were dealt with here."""
+        if not chief:
+            return False
+        if mode != "chief":
+            # A note from normal mode is waiting out its window: only "scrap that" is taken here.
+            if batch.pending and len(new) == 1 and classify(new[0][1]) == "scrap":
+                await scrap()
+                return True
+            return False
+        if not new:
+            return True  # an empty turn in chief mode: nothing to send, nothing to say
+        gate.forget(context, [i for i, _ in new])
+        for _, heard in new:
+            text = clean_heard(heard)
+            if not text:
+                logger.info("SIFT chief mode: nothing real heard (noise), nothing queued")
+                continue
+            kind = classify(text)
+            tail = ""
+            if kind == "message":
+                text, tail = split_tail(text)  # "Cancel the offsite. Scrap that." in one breath
+                head = classify(text)
+                if tail and head in ("exit", "scrap"):  # two commands at once: "back to Sift, scrap that"
+                    if "scrap" in (head, tail):
+                        await scrap()
+                    if "exit" in (head, tail):
+                        await leave()
+                        return True
+                    continue
+                if tail == "scrap":
+                    batch.add(text, via="chief")
+                    await scrap()
+                    continue
+                first = batch.add(text, via="chief")
+                if tail != "exit":
+                    await say(receipt(text, first))
+                await show({"type": "chief", "state": "waiting", "text": batch.text})
+                logger.info(f"SIFT chief message waiting ({len(batch.text)} chars, {'new' if first else 'joined'})")
+            if kind == "exit" or tail == "exit":
+                await leave()
+                return True
+            if kind == "scrap":
+                await scrap()
+        return True
+
+    async def scrap():
+        if batch.pending:
+            dropped = batch.scrap()
+            context.add_message({"role": "assistant", "content": f"(Scrapped, not sent to chief of staff) {dropped}"})
+            await show({"type": "chief", "state": "scrapped", "text": dropped})
+            await say("Scrapped.")
+            logger.info("SIFT chief message scrapped")
+        else:
+            await say("Nothing's waiting to send; the last one already went. Say it another way if it was for your chief of staff.")
+
+    async def send_chief(text: str, via: str):
+        try:
+            async with http.post(f"{TOOLS}/bot/chief/send", json={"text": text, "via": via, "call": call_id}) as r:
+                sent = await r.json()
+        except Exception as error:
+            sent = {"ok": False, "result": f"That didn't send: {error}"}
+        if sent.get("ok"):
+            context.add_message({"role": "assistant", "content": f"(Sent to chief of staff) {text}"})
+            await show({"type": "chief", "state": "sent", "text": text, "dryRun": bool(sent.get("dryRun"))})
+            logger.info(f"SIFT chief message sent ({len(text)} chars{', dry run' if sent.get('dryRun') else ''})")
+        else:
+            await show({"type": "chief", "state": "failed", "text": text})
+            await say(f"That didn't reach your chief of staff. {sent.get('result', '')}".strip())
+            logger.warning(f"SIFT chief send failed: {sent.get('result')}")
+
+    async def chief_ticker():
+        """Sends a waiting message once the person has been quiet for its whole window."""
+        while True:
+            await asyncio.sleep(0.25)
+            if batch.due(speaking=busy.user or held(ear.voice_at, busy.turn_end, time.monotonic())):
+                via = batch.via
+                await send_chief(batch.take(), via)
+
+    async def set_mode(params: FunctionCallParams):
+        want = str((params.arguments or {}).get("mode", "")).lower()
+        if not chief:
+            await params.result_callback("Chief-of-staff mode isn't set up here.")
+            return
+        if want == "chief":
+            await enter(params.llm)
+            result = "Chief-of-staff mode is on; the switch said its line. Say nothing."
+        else:
+            if mode == "chief":
+                await leave(params.llm)
+            result = "Back in normal mode; the switch said its line. Say nothing."
+        await params.result_callback(result, properties=FunctionCallResultProperties(run_llm=False))
+
+    async def note_to_chief(params: FunctionCallParams):
+        text = str((params.arguments or {}).get("text", "")).strip()
+        said = [m["content"] for m in context.get_messages() if m.get("role") == "user" and isinstance(m.get("content"), str)
+                and not m["content"].startswith("(")]
+        try:
+            async with http.post(f"{TOOLS}/bot/chief/check", json={"text": text, "_heard": " ".join(said[-3:])}) as r:
+                check = await r.json()
+        except Exception as error:
+            check = {"ok": False, "result": f"That didn't work: {error}"}
+        if not check.get("ok"):
+            logger.info("SIFT note_to_chief refused: not their words")
+            await params.result_callback(check.get("result", "Not sent."))
+            return
+        first = batch.add(text, via="note")
+        await say(receipt(text, first), params.llm)
+        await show({"type": "chief", "state": "waiting", "text": batch.text})
+        logger.info(f"SIFT note_to_chief waiting ({len(batch.text)} chars)")
+        await params.result_callback(
+            "Waiting a few seconds, then it goes to their chief of staff verbatim; the receipt was spoken. Say nothing.",
+            properties=FunctionCallResultProperties(run_llm=False),
+        )
+
+    if chief:
+        llm.register_function("set_mode", set_mode)
+        llm.register_function("note_to_chief", note_to_chief)
 
     # A tap on the orb while it talks: stop and listen.
     @rtvi.event_handler("on_client_message")
@@ -299,6 +550,20 @@ async def bot(runner_args: RunnerArguments):
             event = await news.get()
             while not busy.quiet:
                 await asyncio.sleep(0.4)
+            if event.get("type") == "chief_reply":
+                # The full reply goes in the context and on the page; the short version is spoken.
+                context.add_message({"role": "user", "content": f"(Not said by {person}. Their chief of staff replied: {(event.get('reply') or '(nothing)')[:2500]})"})
+                context.add_message({"role": "assistant", "content": event["line"]})
+                await show({"type": "chief", "state": "reply", "text": event.get("reply", ""), "line": event["line"]})
+                await say(event["line"])
+                logger.info(f"SIFT chief reply spoken ({len(event['line'])} chars)")
+                await asyncio.sleep(1)
+                continue
+            if mode == "chief":
+                # Other news would make the model talk: it waits until they're back with Sift. Progress is dropped.
+                if event.get("type") == "finished":
+                    deferred.append(event)
+                continue
             if event.get("type") == "progress":
                 await task.queue_frames([TTSSpeakFrame(event["text"])])
             elif event.get("type") == "finished":
@@ -338,6 +603,8 @@ async def bot(runner_args: RunnerArguments):
             started = datetime.now(timezone.utc)
         logger.info("SIFT call connected")
         workers.extend([asyncio.create_task(follow()), asyncio.create_task(speak_news())])
+        if chief:
+            workers.append(asyncio.create_task(chief_ticker()))
         # Wait a moment for the read-ahead so the first answer can use it; if it's slow, greet and add it when ready.
         try:
             add_preload(await asyncio.wait_for(asyncio.shield(ahead), timeout=2.5))
@@ -357,6 +624,9 @@ async def bot(runner_args: RunnerArguments):
     @transport.event_handler("on_client_disconnected")
     async def _disconnected(_t, _c):
         logger.info("SIFT call ended")
+        if batch.pending:  # they hung up inside the window without scrapping it: it goes
+            via = batch.via
+            await send_chief(batch.take(), via)
         try:
             body = {"started": started.isoformat(), "ended": datetime.now(timezone.utc).isoformat(), "call": call_id, "turns": transcript()}
             async with http.post(f"{TOOLS}/bot/call-ended", json=body, timeout=aiohttp.ClientTimeout(total=5)) as r:

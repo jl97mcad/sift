@@ -140,6 +140,11 @@
   form#ask button { width: 34px; height: 34px; border-radius: 50%; border: 0; background: var(--text); color: var(--bg); font-size: 16px; cursor: pointer; }
   form#ask button:disabled { opacity: .3; }
   .sift { margin: 0; font-size: 17px; line-height: 1.5; }
+  /* Chief-of-staff mode: the chip and hint say who you're talking to; the glow turns warm. */
+  body.chief { --violet: #e0b46f; }
+  .job .full { margin: 0; font-size: 14px; color: var(--text); white-space: pre-wrap; max-height: 14em; overflow-y: auto; }
+  .job .full:empty { display: none; }
+  .note.chief { font-size: 13px; }
 </style>
 </head>
 <body>
@@ -163,13 +168,16 @@ const IDLE_HANGUP = 5 * 60_000; // ponytail: a call nobody speaks in for 5 minut
 let phase = "off", pc = null, dc = null, micStream = null, micTrack = null, muted = false, ready = false, waiting = [];
 let ping = 0, idleTimer = 0, endAfterSpeech = false, botSpeaking = false, levelCtx = null, micLevel = null, botLevel = null;
 let you = null, youText = "", reply = null, steps = null, working = new Map(), sender = null, micLost = false;
+let chiefMode = "", chiefNote = null; // the chief of staff's label while that mode is on
 const speaker = new Audio(); speaker.autoplay = true; speaker.setAttribute("playsinline", "");
 
 const LABELS = { off: "Ready", connecting: "Connecting", muted: "Not listening", listening: "Listening", hearing: "Hearing you", thinking: "Thinking", speaking: "Speaking" };
 function set(next, text) {
   phase = next;
   document.body.className = { off: "idle", connecting: "waiting", muted: "idle", listening: "listening", hearing: "listening", thinking: "waiting", speaking: "speaking" }[next];
-  hint.textContent = text ?? { off: "Tap to start", connecting: "Connecting…", muted: "Not listening · tap to talk", listening: "Listening · tap to pause", hearing: "Go on…", thinking: "One sec…", speaking: "Talk over me, or tap, to interrupt" }[next];
+  document.body.classList.toggle("chief", Boolean(chiefMode));
+  hint.textContent = text ?? (chiefMode && ["listening", "hearing", "thinking"].includes(next) ? `${chiefMode} · say “back to Sift” to return`
+    : { off: "Tap to start", connecting: "Connecting…", muted: "Not listening · tap to talk", listening: "Listening · tap to pause", hearing: "Go on…", thinking: "One sec…", speaking: "Talk over me, or tap, to interrupt" }[next]);
   $("typed").placeholder = hint.textContent || "Type instead";
   button.setAttribute("aria-label", !pc ? "Start talking" : { listening: "Stop listening", hearing: "Stop listening", muted: "Listen" }[phase] ?? "Interrupt and listen");
   $("endChat").hidden = !pc;
@@ -237,6 +245,7 @@ function hangUp(text) {
   clearInterval(ping); clearTimeout(idleTimer);
   try { dc?.close(); } catch {} try { pc?.close(); } catch {}
   pc = null; dc = null; sender = null; micLost = false; ready = false; waiting = []; endAfterSpeech = false; botSpeaking = false; muted = false;
+  chiefMode = ""; chiefNote = null;
   micStream?.getTracks().forEach((t) => t.stop()); micStream = null; micTrack = null;
   speaker.srcObject = null;
   levelCtx?.close().catch(() => {}); levelCtx = null; micLevel = botLevel = null;
@@ -283,14 +292,14 @@ document.addEventListener("visibilitychange", () => {
 // ---- What the call tells us
 function onEvent({ type, data }) {
   if (type === "bot-ready") { ready = true; listenOrMute(); waiting.splice(0).forEach(typedSend); return; }
-  if (type === "user-started-speaking") { awake(); if (muted) return; if (!you) startYou("You said"); set("hearing"); return; }
+  if (type === "user-started-speaking") { awake(); if (muted) return; if (!you) startYou(chiefMode ? `To your ${chiefMode.toLowerCase()}` : "You said"); set("hearing"); return; }
   if (type === "user-transcription" && data?.text) {
-    if (!you) startYou("You said");
+    if (!you) startYou(chiefMode ? `To your ${chiefMode.toLowerCase()}` : "You said");
     if (data.final) youText = `${youText} ${data.text}`.trim();
     you.querySelector(".words").textContent = data.final ? youText : `${youText} ${data.text}`.trim();
     return;
   }
-  if (type === "user-stopped-speaking") { if (phase === "hearing") set("thinking"); return; }
+  if (type === "user-stopped-speaking") { if (phase === "hearing") set(chiefMode ? "listening" : "thinking"); return; }
   if (type === "bot-llm-started") { closeYou(); reply = null; if (phase !== "speaking") set("thinking"); return; }
   if (type === "bot-llm-text" && data?.text) {
     finishSteps();
@@ -306,6 +315,8 @@ function onEvent({ type, data }) {
     listenOrMute(); return;
   }
   if (type === "server-message" && data?.type === "tool") { showStep(data); return; }
+  if (type === "server-message" && data?.type === "mode") { showMode(data); return; }
+  if (type === "server-message" && data?.type === "chief") { showChief(data); return; }
   if (type === "server-message" && data?.type === "end") {
     endAfterSpeech = true;
     setTimeout(() => endAfterSpeech && !botSpeaking && hangUp("Bye. Tap to talk again."), 2500);
@@ -334,6 +345,25 @@ function showStep({ name, label, args }) {
 }
 function finishSteps() { steps?.querySelectorAll(".step").forEach((s) => s.classList.add("done")); steps = null; }
 
+// ---- Chief-of-staff mode: your words go to your chief of staff verbatim, after a few seconds' grace.
+function showMode({ mode, label }) {
+  if (mode !== "chief" && you) you.querySelector(".label").textContent = "You said"; // "back to Sift" wasn't sent
+  closeYou();
+  chiefMode = mode === "chief" ? (label || "Chief of staff") : "";
+  add(el("p", "note", chiefMode ? `Talking to your ${chiefMode.toLowerCase()}. Say “back to Sift” to return.` : "Back to Sift."));
+  chiefNote = null;
+  set(phase);
+}
+function showChief({ state, text, line, dryRun }) {
+  closeYou(); // each turn in chief mode gets its own bubble
+  if (state === "reply") { add(el("p", "sift", line || text)); return; }
+  if (state === "waiting" || !chiefNote) chiefNote = chiefNote ?? add(el("p", "note chief"));
+  chiefNote.textContent = { waiting: "Sending in a moment… say “scrap that” to stop it", sent: dryRun ? "Dry run: logged, not sent" : "Sent to your chief of staff",
+    scrapped: "Scrapped, not sent", failed: "Didn't reach your chief of staff" }[state] ?? state;
+  chiefNote.title = text ?? "";
+  if (state !== "waiting") chiefNote = null;
+}
+
 // ---- The orb's size follows whoever is talking
 function meter(stream) {
   const analyser = levelCtx.createAnalyser(); analyser.fftSize = 1024;
@@ -351,7 +381,7 @@ function meter(stream) {
 /** The header chip also says when a session is still working in the background. */
 function chipWork() {
   const busy = [...working.values()];
-  const base = LABELS[phase] ?? "";
+  const base = chiefMode ? `${chiefMode} · ${LABELS[phase] ?? ""}` : LABELS[phase] ?? "";
   chip.textContent = busy.length ? `${base} · ${busy.length === 1 ? busy[0] + " working" : busy.length + " working"}` : base;
 }
 const elapsed = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`; };
@@ -366,7 +396,7 @@ function showJob(job) {
   if (!card) {
     card = add(el("div", "job"));
     const head = el("div", "head"); head.append(el("span", "who"), el("span", "time"));
-    card.append(head, el("div", "title"), el("ul", ""));
+    card.append(head, el("div", "title"), el("ul", ""), el("p", "full"));
     cards.set(job.id, card);
   }
   if (job.status === "cancelled") { card.remove(); cards.delete(job.id); working.delete(job.id); chipWork(); return; }
@@ -378,6 +408,7 @@ function showJob(job) {
   const title = card.querySelector(".title");
   title.textContent = shortTask(job.task); title.title = job.task;
   card.querySelector("ul").replaceChildren(...job.steps.filter((s) => s !== "Thinking").slice(-2).map((s) => el("li", "", s)));
+  card.querySelector(".full").textContent = job.chief && job.status !== "running" ? job.reply ?? "" : ""; // the chief's full reply
   if (job.status === "running" || job.status === "queued") working.set(job.id, Who); else working.delete(job.id);
   chipWork();
 }

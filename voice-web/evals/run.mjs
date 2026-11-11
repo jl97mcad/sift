@@ -25,6 +25,7 @@ const tools = await load("tools.mjs");
 const digest = await load("digest.mjs");
 const asks = await load("asks.mjs");
 const memory = await load("memory.mjs");
+const chief = await load("chief.mjs");
 
 // Memory notes for today, yesterday and older days, in a scratch folder.
 const memDir = await mkdtemp(join(tmpdir(), "voice-evals-"));
@@ -69,6 +70,9 @@ const handlersFor = (calls, heard) => {
     catch_up: () => `Needs Jon:\n${needsText}\n\nSessions:\n${fixtures.sessions}\n\nfocus list:\n${source("focus list")}`,
     answer_ask: (args) => (asks ? asks.answerAsk({ ...config, asks: { ...config.asks, dryRun: true } }, { ...args, ...heard }, { list: askList, write: noWrite, log: () => {} }) : "Unknown tool."),
     recall: (args) => (memory ? memory.recall(config, args) : "Unknown tool."),
+    // As the bot answers them: a switch that says its own line, and a note checked against what was heard.
+    set_mode: ({ mode }) => (mode === "chief" ? "Chief-of-staff mode is on; the switch said its line. Say nothing." : "Back in normal mode; the switch said its line. Say nothing."),
+    note_to_chief: ({ text }) => (chief?.notTheirWords(text, heard._heard) || "Waiting a few seconds, then it goes to their chief of staff verbatim; the receipt was spoken. Say nothing."),
     stay_quiet: () => "Staying quiet.",
     end_conversation: () => "Ended.",
   };
@@ -89,10 +93,14 @@ function score(c, calls, rounds, text) {
   const wrote = calls.filter((x) => x.name === "answer_ask" && /^(Recorded|Dry run)/.test(x.result ?? "")).length;
   if (e.confirmedNever || e.noWrite) checks.push([wrote === 0, "no write without a yes"]);
   if (e.confirmedOnce) checks.push([wrote >= 1, "writes after the yes"]);
+  for (const [tool, fields] of Object.entries(e.args ?? {})) {
+    for (const [field, pattern] of Object.entries(fields)) checks.push([calls.some((x) => x.name === tool && new RegExp(pattern, "i").test(String(x.args?.[field] ?? ""))), `${tool} ${field} /${pattern}/`]);
+  }
+  if (e.accepted) checks.push([calls.some((x) => x.name === e.accepted && !/^Not their words/.test(x.result ?? "")), `${e.accepted} accepted as their words`]);
   for (const b of c.banned ?? []) checks.push([!names.includes(b), `no ${b}`]);
   for (const m of c.mention ?? []) checks.push([new RegExp(m, "i").test(text), `says /${m}/`]);
   for (const m of c.notSay ?? []) checks.push([!new RegExp(m, "i").test(text), `never says /${m}/`]);
-  checks.push([text.trim().length > 0 || names.includes("stay_quiet"), "answers"]);
+  checks.push([text.trim().length > 0 || names.includes("stay_quiet") || names.some((n) => ["set_mode", "note_to_chief"].includes(n)), "answers"]);
   return checks;
 }
 
