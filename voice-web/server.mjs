@@ -377,6 +377,11 @@ async function answerAskTool(args) {
 
 /** A finished call's memory note: one cheap model call, appended to the day's file. */
 async function remember({ started, call, turns }) {
+  // A call that never heard the person has no conversation to note; summarising it only writes the
+  // preload (their needs queue, their sessions) into memory as though it had been discussed.
+  if (!Array.isArray(turns) || !turns.some((turn) => turn.role === "user")) {
+    return console.log("memory: no conversation in that call, nothing noted");
+  }
   const at = Date.parse(started) || Date.now();
   const asks = answered.filter((a) => (call ? a.call === call : a.at >= at)).map((a) => `- ${a.plan}: ${a.note}`).join("\n");
   const t0 = Date.now();

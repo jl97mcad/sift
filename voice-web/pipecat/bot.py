@@ -683,12 +683,21 @@ async def bot(runner_args: RunnerArguments):
             ahead.add_done_callback(lambda t: add_preload(t.result()) if not t.cancelled() and not t.exception() else None)
 
     def transcript() -> list[dict]:
-        """The person's words and the assistant's, for the server's note of the call."""
+        """The person's words and the assistant's, for the server's note of the call.
+
+        Context messages start with "(" (the preload block, system notes); they are not the
+        conversation and must never be summarised as if they were. No real user turn means no note:
+        a call that only heard the greeting wrote the needs queue into memory as "open threads".
+        """
         out = []
         for m in context.get_messages():
-            if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str) and m["content"].strip():
-                out.append({"role": m["role"], "text": m["content"]})
-        return out
+            text = m.get("content")
+            if m.get("role") not in ("user", "assistant") or not isinstance(text, str) or not text.strip():
+                continue
+            if m["role"] == "user" and text.lstrip().startswith("("):
+                continue
+            out.append({"role": m["role"], "text": text})
+        return out if any(t["role"] == "user" for t in out) else []
 
     @transport.event_handler("on_client_disconnected")
     async def _disconnected(_t, _c):
