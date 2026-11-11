@@ -21,7 +21,6 @@ import uuid
 from datetime import datetime, timezone
 
 import aiohttp
-import httpx
 import numpy as np
 from loguru import logger
 from openai import DefaultAsyncHttpxClient
@@ -292,8 +291,9 @@ async def bot(runner_args: RunnerArguments):
     )
     # Every provider call is bounded: the SDK defaults are 600 s with two retries, which leaves a call
     # deaf for half an hour when OpenRouter stalls. One shared client, 20 s total and 5 s to connect.
-    timeout = httpx.Timeout(float(os.environ.get("SIFT_PROVIDER_TIMEOUT", "20")), connect=5.0)
-    provider_http = DefaultAsyncHttpxClient(timeout=timeout)
+    # A plain number: Pipecat's TTS adds to the client timeout, and an httpx.Timeout object breaks
+    # that arithmetic (float + Timeout) before the first clip is ever requested.
+    provider_http = DefaultAsyncHttpxClient(timeout=float(os.environ.get("SIFT_PROVIDER_TIMEOUT", "20")))
     model = os.environ.get("SIFT_LLM", "deepseek/deepseek-v4.1-flash")
     fallback = os.environ.get("SIFT_LLM_FALLBACK", "deepseek/deepseek-v4-flash")
     stt = OpenAISTTService(api_key=api_key, base_url=OR, model=os.environ.get("SIFT_STT", "qwen/qwen3-asr-0.6b"),
