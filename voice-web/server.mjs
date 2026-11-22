@@ -18,6 +18,7 @@ import { answerAsk, answering } from "./asks.mjs";
 import { look, reading, READ_HANDLERS } from "./reader.mjs";
 import { recall, recentMemory, remembering, summariseCall, writeMemory } from "./memory.mjs";
 import { chiefDryRun, chiefLabel, chiefOn, chiefWorker, notTheirWords, replyAfter, replyLine, spokenSummary, wrap } from "./chief.mjs";
+import { providerFor } from "./openrouter.mjs";
 
 const PORT = Number(process.env.PORT ?? 8771);
 // The Pipecat bot (pipecat/bot.py): the page's WebRTC offer goes to it; it calls the tools on BOT_PORT.
@@ -641,11 +642,13 @@ const botTools = {
 };
 createServer(async (request, response) => {
   try {
-    if (request.method === "GET" && request.url === "/bot/setup") {
+    if (request.method === "GET" && (request.url === "/bot/setup" || request.url.startsWith("/bot/setup?"))) {
       // Earlier work this server has seen, so a new call can pick up "how's that going?".
       const earlier = jobs.length ? `\n\nWork handed off earlier today (job_status has the latest):\n${jobStatus()}` : "";
       const chief = chiefOn(config) ? { label: chiefLabel(config), dryRun: chiefDryRun(config) } : null;
-      return send(response, 200, { person: config.person, assistant: config.assistant ?? "", timezone: config.timezone, prompt: systemPrompt(config) + earlier, tools: toolsFor(config), filler: config.filler === true, chief });
+      // The bot's model runs only on its allowed providers; none configured fails the call's setup.
+      const provider = providerFor(config, new URL(request.url, "http://bot").searchParams.get("model"));
+      return send(response, 200, { person: config.person, assistant: config.assistant ?? "", timezone: config.timezone, prompt: systemPrompt(config) + earlier, tools: toolsFor(config), filler: config.filler === true, chief, provider });
     }
     // Read when the call starts, so "what needs me" and "what's running" need no tool.
     if (request.method === "GET" && request.url === "/bot/context") return send(response, 200, { context: config.preload ? await preload() : "" });

@@ -8,7 +8,7 @@ import { isIP } from "node:net";
 import { resolve, sep } from "node:path";
 import { loadavg, uptime } from "node:os";
 import { scrub } from "./memory.mjs";
-import { key } from "./speech.mjs";
+import { chat } from "./openrouter.mjs";
 
 export const reading = (config) => Boolean(config.reader);
 const cap = (text, n = 4000) => (text.length > n ? `${text.slice(0, n)}…` : text);
@@ -157,12 +157,8 @@ export async function web(config, { action, query, url } = {}) {
     return "Too many redirects.";
   }
   if (!String(query ?? "").trim()) return "Say what to search the web for.";
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST", headers: { Authorization: `Bearer ${await key()}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: readerModel(config), max_tokens: 500, reasoning: { enabled: false }, plugins: [{ id: "web", max_results: 4 }],
-      messages: [{ role: "user", content: `Search the web and answer in under 120 words, naming the sources: ${String(query).slice(0, 300)}` }] }),
-    signal: AbortSignal.timeout(40_000),
-  });
+  const response = await chat(config, { model: readerModel(config), max_tokens: 500, reasoning: { enabled: false }, plugins: [{ id: "web", max_results: 4 }],
+    messages: [{ role: "user", content: `Search the web and answer in under 120 words, naming the sources: ${String(query).slice(0, 300)}` }] }, { timeout: 40_000 });
   if (!response.ok) return `The web search failed: HTTP ${response.status}.`;
   return clean((await response.json()).choices?.[0]?.message?.content ?? "No answer.");
 }
@@ -209,11 +205,8 @@ Final answer: plain spoken sentences, at most 60 words, no lists, markdown, ids 
   let tokens = 0, steps = 0;
   for (; steps <= maxSteps; steps += 1) {
     const last = steps === maxSteps || Date.now() > deadline;
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST", headers: { Authorization: `Bearer ${await key()}`, "Content-Type": "application/json", "X-Title": "Sift reader" },
-      body: JSON.stringify({ model: readerModel(config), max_tokens: 500, reasoning: { enabled: false }, ...(last ? {} : { tools }), messages }),
-      signal: AbortSignal.timeout(Math.max(5_000, Math.min(30_000, deadline - Date.now() + 8_000))),
-    });
+    const response = await chat(config, { model: readerModel(config), max_tokens: 500, reasoning: { enabled: false }, ...(last ? {} : { tools }), messages },
+      { title: "Sift reader", timeout: Math.max(5_000, Math.min(30_000, deadline - Date.now() + 8_000)) });
     if (!response.ok) throw new Error(`Reader model failed: HTTP ${response.status}`);
     const data = await response.json();
     tokens += data.usage?.total_tokens ?? 0;

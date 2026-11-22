@@ -2,7 +2,7 @@
 // Off unless config.chief.worker names a worker. The Pipecat bot matches the phrases and holds each
 // message for its grace window (pipecat/chief.py); this side checks a quick note is the person's own
 // words, wraps the message, sends it, and makes the short spoken version of the reply.
-import { key } from "./speech.mjs";
+import { chat } from "./openrouter.mjs";
 import { notHeard } from "./asks.mjs";
 
 /** On only when chief.worker names a configured session worker (found by seat or title; never a plan lead or a command). */
@@ -61,12 +61,8 @@ export function firstWords(text, n) {
 }
 
 async function complete(config, messages) {
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${await key()}`, "Content-Type": "application/json", "X-Title": config.assistant || "Voice assistant" },
-    body: JSON.stringify({ model: config.chief?.model || config.frontModel || "deepseek/deepseek-v4.1-flash", max_tokens: 160, reasoning: { enabled: false }, messages }),
-    signal: AbortSignal.timeout(20_000),
-  });
+  const response = await chat(config, { model: config.chief?.model || config.frontModel || "deepseek/deepseek-v4.1-flash", max_tokens: 160, reasoning: { enabled: false }, messages },
+    { title: config.assistant || "Voice assistant", timeout: 20_000 });
   if (!response.ok) throw new Error(`Summary model failed: HTTP ${response.status}`);
   return (await response.json()).choices?.[0]?.message?.content ?? "";
 }
