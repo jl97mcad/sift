@@ -2,7 +2,7 @@
 // start and searched by the recall tool. Off unless config.memory.dir is set.
 import { chmod, mkdir, readdir, readFile, appendFile } from "node:fs/promises";
 import { join } from "node:path";
-import { key } from "./speech.mjs";
+import { chat } from "./openrouter.mjs";
 import { cleanText, digestDeja } from "./digest.mjs";
 import { run } from "./asks.mjs";
 
@@ -116,15 +116,10 @@ export async function summariseCall(config, turns, extra = "") {
   const text = transcriptText(turns, config.person);
   const who = config.person ?? "Person";
   if (!text.split("\n").some((l) => l.startsWith(`${who}:`) || l.startsWith(`${who} (`))) return "";
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${await key()}`, "Content-Type": "application/json", "X-Title": config.assistant || "Voice assistant" },
-    body: JSON.stringify({
-      model: config.memory?.model || config.frontModel || "deepseek/deepseek-v4.1-flash", max_tokens: 500, reasoning: { enabled: false },
-      messages: [{ role: "system", content: SUMMARY_PROMPT(config.person ?? "the person") }, { role: "user", content: `${text}${extra ? `\n\n${extra}` : ""}` }],
-    }),
-    signal: AbortSignal.timeout(45_000),
-  });
+  const response = await chat(config, {
+    model: config.memory?.model || config.frontModel || "deepseek/deepseek-v4.1-flash", max_tokens: 500, reasoning: { enabled: false },
+    messages: [{ role: "system", content: SUMMARY_PROMPT(config.person ?? "the person") }, { role: "user", content: `${text}${extra ? `\n\n${extra}` : ""}` }],
+  }, { title: config.assistant || "Voice assistant", timeout: 45_000 });
   if (!response.ok) throw new Error(`Summary model failed: HTTP ${response.status}`);
   const data = await response.json();
   return bullets(data.choices?.[0]?.message?.content ?? "");

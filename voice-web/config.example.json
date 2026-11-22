@@ -6,6 +6,11 @@
   "language": "en",
   "about": "One or two sentences about the person and how their work runs.",
   "frontModel": "deepseek/deepseek-v4.1-flash",
+  "openrouterProviders": {
+    "_note": "OpenRouter provider slugs each model may run on, by model id or by its maker (the part before /). Every chat call sends provider.only from here; a model with no entry is refused, never sent unrestricted.",
+    "deepseek": ["deepseek"],
+    "anthropic": ["anthropic"]
+  },
   "workers": [
     {
       "name": "Control",

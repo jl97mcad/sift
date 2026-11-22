@@ -256,8 +256,13 @@ class Gate(FrameProcessor):
 async def bot(runner_args: RunnerArguments):
     assert isinstance(runner_args, SmallWebRTCRunnerArguments)
     http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=90))
-    async with http.get(f"{TOOLS}/bot/setup") as r:
+    model = os.environ.get("SIFT_LLM", "deepseek/deepseek-v4.1-flash")
+    async with http.get(f"{TOOLS}/bot/setup", params={"model": model}) as r:
         setup = await r.json()
+    # The server's openrouterProviders names the providers this model may run on; none means no call.
+    provider = setup.get("provider") or {}
+    if not provider.get("only"):
+        raise RuntimeError(f"No allowed OpenRouter provider for {model}: set openrouterProviders in config.json.")
     person = setup.get("person") or "the person"
 
     async def read_ahead() -> str:
@@ -281,10 +286,10 @@ async def bot(runner_args: RunnerArguments):
         api_key=api_key,
         base_url=OR,
         settings=OpenAILLMService.Settings(
-            model=os.environ.get("SIFT_LLM", "deepseek/deepseek-v4.1-flash"),
+            model=model,
             max_tokens=800,
             # No hidden reasoning: it ate the budget after long lookups and left nothing to say.
-            extra={"extra_body": {"reasoning": {"enabled": False}}},
+            extra={"extra_body": {"reasoning": {"enabled": False}, "provider": provider}},
         ),
     )
     # OpenRouter's fish-audio PCM comes back at 44.1 kHz, not OpenAI's 24 kHz.

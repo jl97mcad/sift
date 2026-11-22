@@ -1,6 +1,6 @@
 // The front door: a fast model that holds the spoken conversation and hands real work to the
 // person's worker sessions in the background. Everything person-specific comes from config.json.
-import { key } from "./speech.mjs";
+import { chat } from "./openrouter.mjs";
 import { hostsOf, skills } from "./tools.mjs";
 import { answering } from "./asks.mjs";
 import { LOOK_TOOL, READ_TOOLS, reading } from "./reader.mjs";
@@ -174,16 +174,11 @@ export async function respond(config, history, userText, handlers, onText, { too
 }
 
 async function stream(config, history, onText, tools = true, context = "") {
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${await key()}`, "Content-Type": "application/json", "X-Title": config.assistant || "Voice assistant" },
-    body: JSON.stringify({
-      // No hidden reasoning: it ate the token budget after long lookups and left nothing to say.
-      model: config.frontModel, stream: true, max_tokens: 800, reasoning: { enabled: false }, ...(tools ? { tools: toolsFor(config) } : {}),
-      messages: [{ role: "system", content: systemPrompt(config, context) }, ...history],
-    }),
-    signal: AbortSignal.timeout(30_000),
-  });
+  const response = await chat(config, {
+    // No hidden reasoning: it ate the token budget after long lookups and left nothing to say.
+    model: config.frontModel, stream: true, max_tokens: 800, reasoning: { enabled: false }, ...(tools ? { tools: toolsFor(config) } : {}),
+    messages: [{ role: "system", content: systemPrompt(config, context) }, ...history],
+  }, { title: config.assistant || "Voice assistant", timeout: 30_000 });
   if (!response.ok) throw new Error(`Front model failed: HTTP ${response.status}`);
   let text = "";
   const calls = [];
